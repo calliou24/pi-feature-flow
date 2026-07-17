@@ -1,0 +1,56 @@
+{
+  "name": "pi-feature-flow",
+  "version": "0.1.0",
+  "description": "Pi package: explicit-trigger feature workflow with staged subagents, durable feature memory, plan checkpoint, and naming enforcement. Effect-based core.",
+  "author": "calliou24",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/calliou24/pi-feature-flow.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "feature-workflow",
+    "subagents",
+    "effect"
+  ],
+  "files": [
+    "src/**/*.ts",
+    "extensions/**/*.ts",
+    "agents/**/*.md",
+    "scripts/**/*.mjs",
+    "README.md",
+    "REVIEW.md"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "effect": "^3.14.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.8.0"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/feature-flow.ts",
+      "./extensions/ask-user.ts"
+    ],
+    "subagents": {
+      "agents": [
+        "./agents"
+      ]
+    }
+  }
+}
