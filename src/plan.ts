@@ -34,7 +34,12 @@ export function implementationProblem(checkpoint: Checkpoint, plan: string, arti
 // ─── Claude session artifact extraction (used by the tmux publisher) ─────────
 
 export function extractArtifactToolResult(jsonl: string, sessionId: string): { path: string; url: string } | null {
+  return extractArtifactToolResults(jsonl, sessionId)[0] ?? null;
+}
+
+export function extractArtifactToolResults(jsonl: string, sessionId: string): Array<{ path: string; url: string }> {
   const artifactUses = new Map<string, string>();
+  const publications: Array<{ path: string; url: string }> = [];
   for (const line of jsonl.split("\n")) {
     if (!line.trim()) continue;
     let entry: Record<string, unknown>;
@@ -55,11 +60,11 @@ export function extractArtifactToolResult(jsonl: string, sessionId: string): { p
         if (part.type !== "tool_result" || !expectedPath || typeof result?.url !== "string" || typeof result.path !== "string") continue;
         if (result.path !== expectedPath || !CLAUDE_ARTIFACT_URL.test(result.url)) continue;
         if (!result.path.includes(`/${sessionId}/scratchpad/`)) continue;
-        return { path: result.path, url: result.url };
+        publications.push({ path: result.path, url: result.url });
       }
     }
   }
-  return null;
+  return publications;
 }
 
 export function assertPublishedSourceExact(source: string, publishedSource: string): void {
