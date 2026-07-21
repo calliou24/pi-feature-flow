@@ -14,6 +14,7 @@ const ModelRoute = Schema.Struct({
   thinking: ThinkingLevel,
 });
 export type ModelRoute = typeof ModelRoute.Type;
+export type WorkerKind = "sol" | "fable";
 
 const CliRoute = Schema.Struct({
   command: Schema.String,
@@ -23,14 +24,16 @@ const CliRoute = Schema.Struct({
 export type CliRoute = typeof CliRoute.Type;
 
 const Routes = Schema.Struct({
-  /** Subagent that implements the approved plan. */
-  worker: Schema.optionalWith(ModelRoute, { default: () => ({ model: "openai-codex/gpt-5.6-terra", thinking: "high" as const }) }),
+  /** Default implementation subagent. */
+  worker: Schema.optionalWith(ModelRoute, { default: () => ({ model: "openai-codex/gpt-5.6-sol", thinking: "low" as const }) }),
+  /** Explicit opt-in implementation route used only when the developer asks for Fable. */
+  fableWorker: Schema.optionalWith(ModelRoute, { default: () => ({ model: "anthropic/claude-fable-5", thinking: "low" as const }) }),
   /** Fresh-context validator subagent. */
-  validator: Schema.optionalWith(ModelRoute, { default: () => ({ model: "openai-codex/gpt-5.6-terra", thinking: "high" as const }) }),
+  validator: Schema.optionalWith(ModelRoute, { default: () => ({ model: "openai-codex/gpt-5.6-sol", thinking: "high" as const }) }),
   /** Adversarial plan reviewer subagent. */
   adversary: Schema.optionalWith(ModelRoute, { default: () => ({ model: "openai-codex/gpt-5.6-sol", thinking: "high" as const }) }),
-  /** External CLI used to produce the integrated plan (best-writer model). */
-  planner: Schema.optionalWith(CliRoute, { default: () => ({ command: "claude", model: "fable", effort: "high" as const }) }),
+  /** Integrated planning subagent. */
+  planner: Schema.optionalWith(ModelRoute, { default: () => ({ model: "anthropic/claude-fable-5", thinking: "high" as const }) }),
   /** External CLI used for oracle architecture reviews. */
   oracle: Schema.optionalWith(CliRoute, { default: () => ({ command: "claude", model: "fable", effort: "high" as const }) }),
 });
@@ -40,17 +43,14 @@ const Routes = Schema.Struct({
  * every model reference in the extension resolves through these routes.
  */
 const FeatureFlowConfig = Schema.Struct({
-  version: Schema.optionalWith(Schema.Number, { default: () => 3 }),
+  version: Schema.optionalWith(Schema.Number, { default: () => 4 }),
   routes: Schema.optionalWith(Routes, { default: () => Schema.decodeUnknownSync(Routes)({}) }),
   planArtifact: Schema.optionalWith(
     Schema.Struct({
-      /**
-       * "claude-artifact": publish plan.md through the Claude CLI Artifact tool (tmux driver; brittle, best UX).
-       * "file": copy plan.md to a local share directory and hand back a file:// URL (robust default).
-       */
-      publisher: Schema.optionalWith(Schema.Literal("claude-artifact", "file"), { default: () => "file" as const }),
+      /** Tailnet-only HTTPS path managed through `tailscale serve`. */
+      servePath: Schema.optionalWith(Schema.String, { default: () => "/feature-plans" }),
     }),
-    { default: () => ({ publisher: "file" as const }) },
+    { default: () => ({ servePath: "/feature-plans" }) },
   ),
   turnSnapshot: Schema.optionalWith(
     /** Per-settled-turn thread-log capture: off, compact (ids + changed files), full (adds message excerpts). */
@@ -59,12 +59,13 @@ const FeatureFlowConfig = Schema.Struct({
   ),
   budgets: Schema.optionalWith(
     Schema.Struct({
+      planningMaxTurns: Schema.optionalWith(Schema.Number, { default: () => 12 }),
       implementationMaxTurns: Schema.optionalWith(Schema.Number, { default: () => 18 }),
       validationMaxTurns: Schema.optionalWith(Schema.Number, { default: () => 10 }),
       spawnTimeoutMs: Schema.optionalWith(Schema.Number, { default: () => 900_000 }),
       rpcReplyTimeoutMs: Schema.optionalWith(Schema.Number, { default: () => 20_000 }),
     }),
-    { default: () => ({ implementationMaxTurns: 18, validationMaxTurns: 10, spawnTimeoutMs: 900_000, rpcReplyTimeoutMs: 20_000 }) },
+    { default: () => ({ planningMaxTurns: 12, implementationMaxTurns: 18, validationMaxTurns: 10, spawnTimeoutMs: 900_000, rpcReplyTimeoutMs: 20_000 }) },
   ),
   archive: Schema.optionalWith(
     Schema.Struct({
@@ -80,6 +81,10 @@ const FeatureFlowConfig = Schema.Struct({
   ),
 });
 export type FeatureFlowConfig = typeof FeatureFlowConfig.Type;
+
+export function workerRoute(config: FeatureFlowConfig, workerKind: WorkerKind): ModelRoute {
+  return workerKind === "fable" ? config.routes.fableWorker : config.routes.worker;
+}
 
 const decodeConfig = Schema.decodeUnknown(Schema.parseJson(FeatureFlowConfig));
 

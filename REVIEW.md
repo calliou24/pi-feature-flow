@@ -5,6 +5,14 @@ This document reviews the original implementation that lived in
 and `~/.pi/agent/feature-system/config.json`), reconstructs the intent from the
 day's Pi session transcripts, and explains what this repository changes.
 
+> **2026-07-21 routing update:** The CLI planner and tmux Claude Artifact
+> publisher described below are now historical. Current feature planning runs
+> through the Fable-high `feature-planner` Pi subagent, then publishes the exact
+> hash-pinned Markdown through a tailnet-only Tailscale Serve path in the same
+> workflow operation. Implementation defaults to Sol low, Fable low requires an
+> explicit request and one-run approval, validation is Sol high, and feature
+> context is Terra high. The original review remains intact as design history.
+
 ## 1. Intent recovered from the session transcripts
 
 The design emerged across several sessions on 2026-07-16 (notably
