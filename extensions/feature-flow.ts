@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { ARTIFACT_NAMES, type ArtifactName, type FeatureStage, type FeatureState, type RunStage } from "../src/domain.ts";
 import { isAmendNoEdit, namingPrefix, normalizeFeatureId, validateNamingCommand } from "../src/identity.ts";
 import { composeContinuationContext } from "../src/plan.ts";
-import { FeatureConfig, type ModelRoute } from "../src/config.ts";
+import { FeatureConfig } from "../src/config.ts";
 import { FeatureStore, featureDir } from "../src/store.ts";
 import { Workflow } from "../src/workflow.ts";
 import { Planner } from "../src/planner.ts";
@@ -95,16 +95,6 @@ export default function featureFlow(pi: ExtensionAPI): void {
       `${ctx.ui.theme.fg("accent", "Feature")} ${compactText(state.title, 96)}`,
       `${ctx.ui.theme.fg("muted", "Stage")} ${state.activeStage}  ${ctx.ui.theme.fg("muted", "Status")} ${state.status}  ${ctx.ui.theme.fg("muted", "Rev")} ${state.revision}`,
     ], { placement: "belowEditor" });
-  }
-
-  async function switchMainModel(ctx: ExtensionContext, route: ModelRoute): Promise<void> {
-    const [provider, ...rest] = route.model.split("/");
-    const modelId = rest.join("/");
-    if (!provider || !modelId) throw new Error(`Invalid model route '${route.model}'; expected provider/model.`);
-    const model = ctx.modelRegistry.find(provider, modelId);
-    if (!model) throw new Error(`Model ${route.model} is unavailable.`);
-    if (!(await pi.setModel(model))) throw new Error(`No credentials for ${route.model}.`);
-    pi.setThinkingLevel(route.thinking as never);
   }
 
   // ─── Session binding ───────────────────────────────────────────────────────
@@ -317,7 +307,6 @@ export default function featureFlow(pi: ExtensionAPI): void {
   // ─── Stage operations ──────────────────────────────────────────────────────
 
   async function beginIntegratedPlanning(featureId: string, ctx: ExtensionContext): Promise<void> {
-    const config = await getConfig();
     const state = await loadFeature(featureId);
     await run(Effect.flatMap(FeatureStore, (store) =>
       store.update(featureId, (draft) => {
@@ -326,7 +315,6 @@ export default function featureFlow(pi: ExtensionAPI): void {
         draft.checkpoint = { kind: "none", status: "none", updatedAt: new Date().toISOString() };
       })
     ));
-    await switchMainModel(ctx, config.routes.interactivePlanning);
     await bindPiSession(featureId, "planning", ctx);
     const kickoff = planningKickoff(state);
     if (ctx.isIdle()) pi.sendUserMessage(kickoff);
@@ -382,8 +370,6 @@ export default function featureFlow(pi: ExtensionAPI): void {
       workflow.decideCheckpoint(featureId, decision, note, ctx.sessionManager.getSessionId() ?? null)
     ));
     if (decision === "approve" && updated.checkpoint.kind === "plan") {
-      const config = await getConfig();
-      await switchMainModel(ctx, config.routes.execution);
       updateUi(ctx, updated);
       await spawnStage(featureId, "implementation", "Implement the complete approved plan; validation will start automatically afterward.", ctx);
       return;
