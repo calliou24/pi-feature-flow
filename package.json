@@ -44,8 +44,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/feature-flow.ts",
-      "./extensions/ask-user.ts"
+      "./extensions/feature-flow.ts"
     ],
     "subagents": {
       "agents": [

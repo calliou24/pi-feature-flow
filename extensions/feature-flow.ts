@@ -12,6 +12,7 @@ import { Workflow } from "../src/workflow.ts";
 import { Planner } from "../src/planner.ts";
 import { PiApi, piApiLayer } from "../src/pi-api.ts";
 import { ASYNC_COMPLETE_EVENT } from "../src/subagents.ts";
+import { FeatureArchive, type ArchivePreview, type ArchiveSummary } from "../src/archive.ts";
 import { MEMORY_GUIDELINES, WORKFLOW_GUIDELINES, featureStartRequest, planningKickoff, turnContext } from "../src/prompts.ts";
 
 const POINTER_TYPE = "feature-flow-pointer";
@@ -45,11 +46,11 @@ async function pathExists(path: string | null | undefined): Promise<boolean> {
 }
 
 export default function featureFlow(pi: ExtensionAPI): void {
-  const appLayer = Layer.mergeAll(Workflow.Default, FeatureStore.Default, FeatureConfig.Default, Planner.Default).pipe(
+  const appLayer = Layer.mergeAll(Workflow.Default, FeatureStore.Default, FeatureConfig.Default, Planner.Default, FeatureArchive.Default).pipe(
     Layer.provide(piApiLayer(pi)),
   );
   const runtime = ManagedRuntime.make(appLayer);
-  const run = <A>(effect: Effect.Effect<A, unknown, Workflow | FeatureStore | FeatureConfig | Planner | PiApi>): Promise<A> =>
+  const run = <A>(effect: Effect.Effect<A, unknown, Workflow | FeatureStore | FeatureConfig | Planner | FeatureArchive | PiApi>): Promise<A> =>
     runtime.runPromise(
       effect.pipe(
         Effect.provideService(PiApi, pi),
@@ -69,6 +70,10 @@ export default function featureFlow(pi: ExtensionAPI): void {
   const appendLedger = (featureId: string, event: Record<string, unknown>) =>
     run(Effect.flatMap(FeatureStore, (store) => store.appendLedger(featureId, event)));
   const getConfig = () => run(Effect.map(FeatureConfig, (service) => service.config));
+  const previewArchive = (state: FeatureState) => run(Effect.flatMap(FeatureArchive, (service) => service.preview(state)));
+  const createArchive = (state: FeatureState, preview: ArchivePreview) => run(Effect.flatMap(FeatureArchive, (service) => service.archive(state, preview)));
+  const listArchives = () => run(Effect.flatMap(FeatureArchive, (service) => service.list()));
+  const recoverArchive = (featureId: string) => run(Effect.flatMap(FeatureArchive, (service) => service.recover(featureId)));
 
   function requireId(value: string): string {
     const normalized = normalizeFeatureId(value);
@@ -233,6 +238,82 @@ export default function featureFlow(pi: ExtensionAPI): void {
     await createHandoffSession(state, ctx, `Continue work on ${namingPrefix(state)}.\n\n`);
   }
 
+  async function selectLocalFeature(ctx: ExtensionCommandContext, title: string): Promise<FeatureState | null> {
+    const states = await listFeatures();
+    if (states.length === 0) {
+      ctx.ui.notify("No local features are available.", "info");
+      return null;
+    }
+    const choices = states.map((state) => `${namingPrefix(state)} · ${state.status}/${state.activeStage} · ${compactText(state.title, 64)}`);
+    const selected = await ctx.ui.select(title, choices);
+    return selected ? states[choices.indexOf(selected)] ?? null : null;
+  }
+
+  async function archiveFeature(state: FeatureState, ctx: ExtensionCommandContext): Promise<void> {
+    ctx.ui.notify(`Inspecting local resources for ${namingPrefix(state)}…`, "info");
+    const preview = await previewArchive(state);
+    const cleanup = [
+      `${preview.worktrees.length} Git checkout(s) and ${preview.branches.length} local branch(es)`,
+      `${preview.containers.length} related Docker container(s)`,
+      `${preview.files.length} context file(s), including feature memory, plans, sessions, scripts, and artifacts`,
+    ].join("\n");
+    const targets = [
+      ...preview.worktrees.map((worktree) => `worktree: ${worktree.path}`),
+      ...preview.containers.map((container) => `container: ${container.name}`),
+      ...preview.files.filter((file) => file.kind === "support").map((file) => `support: ${file.originalPath}`),
+    ];
+    const visibleTargets = targets.slice(0, 12);
+    let targetSummary = "";
+    if (visibleTargets.length > 0) {
+      const overflow = targets.length > visibleTargets.length ? `\n- …and ${targets.length - visibleTargets.length} more` : "";
+      targetSummary = `\n\nCleanup targets:\n${visibleTargets.map((target) => `- ${target}`).join("\n")}${overflow}`;
+    }
+    const confirmed = await ctx.ui.confirm(
+      `Archive ${namingPrefix(state)} to the private GitHub archive repository?`,
+      `${cleanup}${targetSummary}\n\nCode and database/container state are not archived. Cleanup starts only after the remote push is verified.`,
+    );
+    if (!confirmed) return;
+    const currentSessionFile = ctx.sessionManager.getSessionFile();
+    const currentSessionWillBeRemoved = Boolean(currentSessionFile && preview.files.some((file) => file.originalPath === currentSessionFile));
+    const result = await createArchive(state, preview);
+    if (result.localFeatureRemoved && activeFeatureId === state.featureId) {
+      activeFeatureId = null;
+      updateUi(ctx);
+    }
+    const warningText = result.warnings.length > 0 ? `\nCleanup warnings:\n${result.warnings.map((warning) => `- ${warning}`).join("\n")}` : "";
+    ctx.ui.notify(`Archived ${namingPrefix(state)}: ${result.url}${warningText}`, result.warnings.length > 0 ? "warning" : "info");
+    if (currentSessionWillBeRemoved) ctx.shutdown();
+  }
+
+  function archiveChoice(summary: ArchiveSummary): string {
+    return `${summary.workItem} · ${summary.createdAt.slice(0, 10)} · ${compactText(summary.title, 72)}`;
+  }
+
+  async function recoverFeature(featureId: string, ctx: ExtensionCommandContext): Promise<void> {
+    const result = await recoverArchive(featureId);
+    const state = await loadFeature(result.featureId);
+    ctx.ui.notify(`Recovered ${namingPrefix(state)} (${result.restoredFiles} files restored, ${result.skippedFiles} already present). Runtime containers and code checkouts are intentionally not recreated.`, "info");
+    if (await pathExists(state.project.cwd)) {
+      await createHandoffSession(state, ctx, `Continue work on recovered feature ${namingPrefix(state)}. Read the restored memory and artifacts, then inspect the remote implementation history if code context is needed.\n\n`);
+      return;
+    }
+    await setActive(state.featureId, ctx);
+    ctx.ui.notify(`The original project path no longer exists: ${state.project.cwd}. The feature is restored and visible in /feature, but no handoff session was created.`, "warning");
+  }
+
+  async function showArchiveSelector(ctx: ExtensionCommandContext): Promise<void> {
+    const archives = await listArchives();
+    if (archives.length === 0) {
+      ctx.ui.notify("No remote feature archives are available for the active GitHub account.", "info");
+      return;
+    }
+    const choices = archives.map(archiveChoice);
+    const selected = await ctx.ui.select("Private feature archives — select one to recover", choices);
+    if (!selected) return;
+    const archive = archives[choices.indexOf(selected)];
+    if (archive) await recoverFeature(archive.featureId, ctx);
+  }
+
   // ─── Stage operations ──────────────────────────────────────────────────────
 
   async function beginIntegratedPlanning(featureId: string, ctx: ExtensionContext): Promise<void> {
@@ -340,6 +421,19 @@ export default function featureFlow(pi: ExtensionAPI): void {
       await queueFeatureRequest(request.trim());
       return;
     }
+    if (command === "recover") {
+      if (args.length === 0) return showArchiveSelector(ctx);
+      return recoverFeature(requireId(args[0]!), ctx);
+    }
+    if (command === "archive") {
+      const selected = args[0]
+        ? await loadFeature(requireId(args[0]))
+        : activeFeatureId
+          ? await loadFeature(activeFeatureId)
+          : await selectLocalFeature(ctx, "Features — select one to archive and clean up");
+      if (selected) await archiveFeature(selected, ctx);
+      return;
+    }
     let requestedId: string | null = null;
     const featureFlag = args.indexOf("--feature");
     if (featureFlag >= 0) {
@@ -382,13 +476,13 @@ export default function featureFlow(pi: ExtensionAPI): void {
       await createHandoffSession(state, ctx, `${task}\n\n`);
       return;
     }
-    throw new Error("Usage: /feature (selector) or /feature <new|use|list|status|plan|publish|oracle|adversary|approve|reject|implement|validate|unlock|followup|resume>");
+    throw new Error("Usage: /feature (selector) or /feature <new|use|list|status|plan|publish|oracle|adversary|approve|reject|implement|validate|unlock|followup|resume|archive|recover>");
   }
 
   pi.registerCommand("feature", {
     description: "Open the feature selector, create a feature request, or use recovery controls",
     getArgumentCompletions: (prefix) =>
-      ["new", "use", "list", "status", "plan", "publish", "oracle", "adversary", "approve", "reject", "implement", "validate", "unlock", "followup", "resume"]
+      ["new", "use", "list", "status", "plan", "publish", "oracle", "adversary", "approve", "reject", "implement", "validate", "unlock", "followup", "resume", "archive", "recover"]
         .filter((value) => value.startsWith(prefix))
         .map((value) => ({ value, label: value })),
     handler: async (args, ctx) => {
@@ -523,14 +617,24 @@ export default function featureFlow(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_result", async (event, ctx) => {
-    if (!activeFeatureId || event.toolName !== "ask_user" || event.isError) return;
-    const details = event.details as { cancelled?: boolean; questions?: Array<{ id: string; prompt: string }>; answers?: Array<{ id: string; labels: string[]; skipped: boolean }> } | undefined;
+    if (!activeFeatureId || event.toolName !== "ask_user_question" || event.isError) return;
+    const details = event.details as {
+      cancelled?: boolean;
+      answers?: Array<{
+        question: string;
+        kind: "option" | "custom" | "chat" | "multi";
+        answer: string | null;
+        selected?: string[];
+        notes?: string;
+      }>;
+    } | undefined;
     if (!details || details.cancelled || !details.answers?.length) return;
     const lines = details.answers.map((answer) => {
-      const prompt = details.questions?.find((question) => question.id === answer.id)?.prompt || answer.id;
-      return `- **${prompt}**\n  - ${answer.skipped ? "Skipped" : answer.labels.join(", ")}`;
+      const response = answer.kind === "multi" ? answer.selected?.join(", ") : answer.answer;
+      const notes = answer.notes ? `\n  - Notes: ${answer.notes}` : "";
+      return `- **${answer.question}**\n  - ${response || "No answer"}${notes}`;
     }).join("\n");
-    await appendArtifact(activeFeatureId, "assumptions", "Raw interview answers", lines, "user-via-ask_user");
+    await appendArtifact(activeFeatureId, "assumptions", "Raw interview answers", lines, "user-via-ask_user_question");
     await appendLedger(activeFeatureId, { type: "questions.answered", toolCallId: event.toolCallId, piSessionId: ctx.sessionManager.getSessionId() ?? null });
   });
 
