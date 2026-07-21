@@ -89,7 +89,7 @@ export const WORKFLOW_GUIDELINES = [
   "Ask one focused ask_user_question identity question only when the user triggered the workflow but identity cannot be inferred.",
   "During planning, ask only meaningful unknowns with ask_user_question. Group independent questions into one invocation. When resolved, call feature_workflow plan; always give the returned plan artifact URL to the user.",
   "Natural-language plan approval still requires action=request_approval so the human sees the TUI confirmation. Never approve the plan yourself.",
-  "After plan approval, implementation and fresh validation run automatically with no package-review or final-accept checkpoints. Surface blockers, but do not ask for routine acceptance.",
+  "After plan approval, implementation defaults to the Sol-low worker and fresh validation runs automatically with no package-review or final-accept checkpoints. Select the Fable-low worker only when the user explicitly requests Fable for that run. Surface blockers, but do not ask for routine acceptance.",
 ];
 
 export const MEMORY_GUIDELINES = [

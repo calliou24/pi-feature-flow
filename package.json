@@ -21,7 +21,6 @@
     "src/**/*.ts",
     "extensions/**/*.ts",
     "agents/**/*.md",
-    "scripts/**/*.mjs",
     "README.md",
     "REVIEW.md"
   ],

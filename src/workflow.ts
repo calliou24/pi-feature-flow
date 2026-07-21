@@ -5,15 +5,14 @@ import {
   type RunStage,
   type SessionRecord,
   PublishFailed,
-  SpawnFailed,
+  type SpawnFailed,
   StageNotReady,
 } from "./domain.ts";
 import { implementationProblem, markdownRevision, planArtifactProblem, planHash, validationVerdictFromContents } from "./plan.ts";
-import { FeatureConfig } from "./config.ts";
+import { FeatureConfig, type WorkerKind, workerRoute } from "./config.ts";
 import { FeatureStore } from "./store.ts";
 import { SubagentGateway } from "./subagents.ts";
 import { Planner } from "./planner.ts";
-import { PlanPublisher } from "./publisher.ts";
 import { stagePrompt, stageRole } from "./prompts.ts";
 
 export interface RunCompletion {
@@ -34,16 +33,15 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
     const store = yield* FeatureStore;
     const gateway = yield* SubagentGateway;
     const planner = yield* Planner;
-    const publisher = yield* PlanPublisher;
     const { config } = yield* FeatureConfig;
 
-    const publishPlan = (featureId: string) =>
+    const publishGeneratedPlan = (featureId: string) =>
       Effect.gen(function* () {
         const state = yield* store.load(featureId);
         const plan = yield* store.readArtifact(featureId, "plan");
         const planRevision = markdownRevision(plan);
         if (planRevision === null) return yield* Effect.fail(new PublishFailed({ reason: "plan.md has no revision frontmatter." }));
-        const url = yield* publisher.publish(state, planRevision).pipe(
+        const url = yield* planner.publish(state, planRevision).pipe(
           Effect.tapError((error) =>
             store.update(featureId, (draft) => {
               draft.status = "planning";
@@ -69,8 +67,8 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
         const output = yield* planner.plan(state, cwd);
         yield* store.replaceArtifact(featureId, "plan", output.markdown, "planner");
         const record: SessionRecord = {
-          kind: "planner", sessionId: output.sessionId, sessionFile: null, transcriptPath: null, cwd,
-          stage: "planning", role: "feature-planner", runId: null, asyncDir: null, parentSessionId,
+          kind: "planner", sessionId: null, sessionFile: output.sessionPath, transcriptPath: output.transcriptPath, cwd,
+          stage: "planning", role: "feature-planner", runId: output.runId, asyncDir: output.asyncDir, parentSessionId,
           startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), endReason: "complete",
         };
         yield* store.update(featureId, (draft) => {
@@ -79,7 +77,7 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
           draft.status = "planning";
           draft.checkpoint = { kind: "none", status: "none", updatedAt: new Date().toISOString() };
         });
-        return yield* publishPlan(featureId);
+        return yield* publishGeneratedPlan(featureId);
       });
 
     const decideCheckpoint = (featureId: string, decision: "approve" | "reject", note: string, piSessionId: string | null) =>
@@ -107,7 +105,7 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
         return updated;
       });
 
-    const spawnStage = (featureId: string, stage: RunStage, task: string, cwd: string | null, parentSessionId: string | null) =>
+    const spawnStage = (featureId: string, stage: RunStage, task: string, cwd: string | null, parentSessionId: string | null, workerKind: WorkerKind = "sol") =>
       Effect.gen(function* () {
         const state = yield* store.load(featureId);
         const runCwd = cwd ?? state.project.cwd;
@@ -137,7 +135,9 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
           yield* store.appendLedger(featureId, { type: "execution.reserved", token: requestId, stage, piSessionId: parentSessionId });
         }
 
-        const route = stage === "implementation" ? config.routes.worker : stage === "validation" ? config.routes.validator : config.routes.adversary;
+        let route = config.routes.adversary;
+        if (stage === "implementation") route = workerRoute(config, workerKind);
+        else if (stage === "validation") route = config.routes.validator;
         const maxTurns = stage === "implementation" ? config.budgets.implementationMaxTurns : config.budgets.validationMaxTurns;
         const spawnResult = yield* gateway.spawn({
           agent: stageRole(stage),
@@ -174,7 +174,7 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
           }
           draft.sessions.push(record);
         });
-        yield* store.appendLedger(featureId, { type: "subagent.started", stage, runId: spawnResult.runId, asyncDir: spawnResult.asyncDir, task });
+        yield* store.appendLedger(featureId, { type: "subagent.started", stage, runId: spawnResult.runId, asyncDir: spawnResult.asyncDir, task, ...(stage === "implementation" ? { workerKind } : {}) });
         return { runId: spawnResult.runId, state: yield* store.load(featureId) };
       });
 
@@ -236,7 +236,7 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
         } satisfies RunCompletion;
       });
 
-    return { publishPlan, runPlan, decideCheckpoint, spawnStage, completeRun };
+    return { runPlan, decideCheckpoint, spawnStage, completeRun };
   }),
-  dependencies: [FeatureStore.Default, SubagentGateway.Default, Planner.Default, PlanPublisher.Default, FeatureConfig.Default],
+  dependencies: [FeatureStore.Default, SubagentGateway.Default, Planner.Default, FeatureConfig.Default],
 }) {}

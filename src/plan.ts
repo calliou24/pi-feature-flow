@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Checkpoint, FeatureState, PlanArtifact } from "./domain.ts";
 
-export const CLAUDE_ARTIFACT_URL = /https:\/\/claude\.ai\/code\/artifact\/[A-Za-z0-9_-]+/;
-export const ANY_ARTIFACT_URL = /(?:https:\/\/claude\.ai\/code\/artifact\/[A-Za-z0-9_-]+|file:\/\/\S+)/;
+export const ANY_ARTIFACT_URL = /(?:https:\/\/[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.ts\.net\/\S+|file:\/\/\S+)/;
 
 export function extractArtifactUrl(value: string): string | null {
   return value.match(ANY_ARTIFACT_URL)?.[0] ?? null;
@@ -29,46 +28,6 @@ export function planArtifactProblem(plan: string, artifact: PlanArtifact | null)
 export function implementationProblem(checkpoint: Checkpoint, plan: string, artifact: PlanArtifact | null): string | null {
   if (checkpoint.status !== "approved" || checkpoint.kind !== "plan") return "Implementation requires the approved plan checkpoint.";
   return planArtifactProblem(plan, artifact);
-}
-
-// ─── Claude session artifact extraction (used by the tmux publisher) ─────────
-
-export function extractArtifactToolResult(jsonl: string, sessionId: string): { path: string; url: string } | null {
-  return extractArtifactToolResults(jsonl, sessionId)[0] ?? null;
-}
-
-export function extractArtifactToolResults(jsonl: string, sessionId: string): Array<{ path: string; url: string }> {
-  const artifactUses = new Map<string, string>();
-  const publications: Array<{ path: string; url: string }> = [];
-  for (const line of jsonl.split("\n")) {
-    if (!line.trim()) continue;
-    let entry: Record<string, unknown>;
-    try { entry = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-    const message = entry.message as { content?: unknown } | undefined;
-    if (entry.type === "assistant" && Array.isArray(message?.content)) {
-      for (const part of message.content as Array<Record<string, unknown>>) {
-        const input = part.input as { file_path?: unknown } | undefined;
-        if (part.type === "tool_use" && part.name === "Artifact" && typeof part.id === "string" && typeof input?.file_path === "string") {
-          artifactUses.set(part.id, input.file_path);
-        }
-      }
-    }
-    if (entry.type === "user" && Array.isArray(message?.content)) {
-      const result = entry.toolUseResult as { url?: unknown; path?: unknown } | undefined;
-      for (const part of message.content as Array<Record<string, unknown>>) {
-        const expectedPath = typeof part.tool_use_id === "string" ? artifactUses.get(part.tool_use_id) : undefined;
-        if (part.type !== "tool_result" || !expectedPath || typeof result?.url !== "string" || typeof result.path !== "string") continue;
-        if (result.path !== expectedPath || !CLAUDE_ARTIFACT_URL.test(result.url)) continue;
-        if (!result.path.includes(`/${sessionId}/scratchpad/`)) continue;
-        publications.push({ path: result.path, url: result.url });
-      }
-    }
-  }
-  return publications;
-}
-
-export function assertPublishedSourceExact(source: string, publishedSource: string): void {
-  if (planHash(source) !== planHash(publishedSource)) throw new Error("Published artifact source does not exactly match the current plan.md.");
 }
 
 // ─── Validation verdict ──────────────────────────────────────────────────────

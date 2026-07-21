@@ -2,7 +2,6 @@ import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import {
   composeContinuationContext,
-  extractArtifactToolResults,
   extractArtifactUrl,
   implementationProblem,
   markdownRevision,
@@ -15,7 +14,7 @@ import type { FeatureState } from "../src/domain.ts";
 const PLAN = "---\nfeature_id: f\nwork_item: F-1\nrevision: 4\nupdated_at: now\nauthor: planner\n---\n\n# Plan\n";
 
 describe("plan artifact gate", () => {
-  const artifact = { url: "https://claude.ai/code/artifact/abc123", publishedAt: "now", planRevision: 4, planHash: planHash(PLAN) };
+  const artifact = { url: "https://ubuntu-desktop.example.ts.net/feature-plans/f/plan-rev4.md", publishedAt: "now", planRevision: 4, planHash: planHash(PLAN) };
 
   it("extracts revision from frontmatter", () => {
     assert.equal(markdownRevision(PLAN), 4);
@@ -38,42 +37,14 @@ describe("plan artifact gate", () => {
     assert.equal(implementationProblem({ kind: "plan", status: "approved", updatedAt: now }, PLAN, artifact), null);
   });
 
-  it("accepts file urls from the file publisher", () => {
+  it("accepts Tailscale HTTPS and local file URLs", () => {
     assert.equal(extractArtifactUrl("published file:///home/x/plan-rev4.md ok"), "file:///home/x/plan-rev4.md");
-    assert.equal(extractArtifactUrl("see https://claude.ai/code/artifact/xYz-9"), "https://claude.ai/code/artifact/xYz-9");
+    assert.equal(
+      extractArtifactUrl("see https://ubuntu-desktop.example.ts.net/feature-plans/f/plan-rev4.md"),
+      "https://ubuntu-desktop.example.ts.net/feature-plans/f/plan-rev4.md",
+    );
+    assert.equal(extractArtifactUrl("see https://public.example.com/plan.md"), null);
     assert.equal(extractArtifactUrl("nothing here"), null);
-  });
-});
-
-describe("claude session artifact extraction", () => {
-  const sessionId = "11111111-2222-3333-4444-555555555555";
-  const scratch = (name: string) => `/tmp/claude-1002/-proj/${sessionId}/scratchpad/${name}`;
-  const use = (id: string, path: string) =>
-    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Artifact", id, input: { file_path: path } }] } });
-  const result = (id: string, path: string, url: string) =>
-    JSON.stringify({ type: "user", toolUseResult: { url, path }, message: { content: [{ type: "tool_result", tool_use_id: id }] } });
-
-  it("returns every verified publication in order", () => {
-    const jsonl = [
-      use("a", scratch("redesign.html")),
-      result("a", scratch("redesign.html"), "https://claude.ai/code/artifact/first"),
-      use("b", scratch("plan.md")),
-      result("b", scratch("plan.md"), "https://claude.ai/code/artifact/second"),
-    ].join("\n");
-    assert.deepEqual(extractArtifactToolResults(jsonl, sessionId).map((p) => p.url), [
-      "https://claude.ai/code/artifact/first",
-      "https://claude.ai/code/artifact/second",
-    ]);
-  });
-
-  it("skips publications outside this session's scratchpad or with mismatched paths", () => {
-    const jsonl = [
-      use("a", "/tmp/claude-1002/-proj/other-session/scratchpad/plan.md"),
-      result("a", "/tmp/claude-1002/-proj/other-session/scratchpad/plan.md", "https://claude.ai/code/artifact/foreign"),
-      use("b", scratch("plan.md")),
-      result("b", scratch("other.md"), "https://claude.ai/code/artifact/moved"),
-    ].join("\n");
-    assert.deepEqual(extractArtifactToolResults(jsonl, sessionId), []);
   });
 });
 

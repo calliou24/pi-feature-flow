@@ -2,7 +2,7 @@
 name: feature-context
 description: Low-cost repository and decision-vault reconnaissance for an explicitly selected feature stage
 model: openai-codex/gpt-5.6-terra
-thinking: low
+thinking: high
 tools: read, grep, find, ls, bash
 systemPromptMode: replace
 inheritProjectContext: true

@@ -8,7 +8,7 @@ import { Effect } from "effect";
 process.env.PI_FEATURE_FLOW_ROOT ??= mkdtempSync(join(tmpdir(), "pi-feature-flow-test-"));
 const root = process.env.PI_FEATURE_FLOW_ROOT;
 
-const { FeatureConfig, CONFIG_PATH } = await import("../src/config.ts");
+const { FeatureConfig, CONFIG_PATH, workerRoute } = await import("../src/config.ts");
 
 const load = () => Effect.runPromise(Effect.map(FeatureConfig, (service) => service.config).pipe(Effect.provide(FeatureConfig.Default)));
 
@@ -23,12 +23,17 @@ describe("main session model ownership", () => {
 describe("feature config", () => {
   it("provides complete defaults without a config file", async () => {
     const config = await load();
-    assert.equal(config.planArtifact.publisher, "file");
+    assert.equal(config.planArtifact.servePath, "/feature-plans");
     assert.equal(config.turnSnapshot, "compact");
+    assert.equal(config.budgets.planningMaxTurns, 12);
     assert.equal(config.budgets.implementationMaxTurns, 18);
-    assert.match(config.routes.worker.model, /\//);
-    assert.deepEqual(Object.keys(config.routes).sort((left, right) => left.localeCompare(right)), ["adversary", "oracle", "planner", "validator", "worker"]);
-    assert.equal(config.routes.planner.command, "claude");
+    assert.deepEqual(config.routes.worker, { model: "openai-codex/gpt-5.6-sol", thinking: "low" });
+    assert.deepEqual(config.routes.fableWorker, { model: "anthropic/claude-fable-5", thinking: "low" });
+    assert.deepEqual(workerRoute(config, "sol"), config.routes.worker);
+    assert.deepEqual(workerRoute(config, "fable"), config.routes.fableWorker);
+    assert.deepEqual(config.routes.validator, { model: "openai-codex/gpt-5.6-sol", thinking: "high" });
+    assert.deepEqual(Object.keys(config.routes).sort((left, right) => left.localeCompare(right)), ["adversary", "fableWorker", "oracle", "planner", "validator", "worker"]);
+    assert.deepEqual(config.routes.planner, { model: "anthropic/claude-fable-5", thinking: "high" });
     assert.equal(config.archive.repository, "pi-feature-archives");
     assert.equal(config.archive.branch, "main");
     assert.ok(config.archive.searchRoots.length > 0);
@@ -44,7 +49,7 @@ describe("feature config", () => {
         execution: { model: "openai-codex/gpt-5.6-terra", thinking: "high" },
         worker: { model: "anthropic/claude-fable-5", thinking: "high" },
       },
-      planArtifact: { publisher: "claude-artifact" },
+      planArtifact: { servePath: "/team-feature-plans" },
       turnSnapshot: "off",
       archive: { repository: "private-feature-context", extraPaths: ["reports/{featureId}.md"] },
     }));
@@ -52,7 +57,7 @@ describe("feature config", () => {
     assert.equal(config.routes.worker.model, "anthropic/claude-fable-5");
     assert.equal("interactivePlanning" in config.routes, false);
     assert.equal("execution" in config.routes, false);
-    assert.equal(config.planArtifact.publisher, "claude-artifact");
+    assert.equal(config.planArtifact.servePath, "/team-feature-plans");
     assert.equal(config.turnSnapshot, "off");
     assert.equal(config.archive.repository, "private-feature-context");
     assert.deepEqual(config.archive.extraPaths, ["reports/{featureId}.md"]);
@@ -64,6 +69,6 @@ describe("feature config", () => {
   it("falls back to defaults on malformed json", async () => {
     writeFileSync(CONFIG_PATH, "{not json");
     const config = await load();
-    assert.equal(config.planArtifact.publisher, "file");
+    assert.equal(config.planArtifact.servePath, "/feature-plans");
   });
 });

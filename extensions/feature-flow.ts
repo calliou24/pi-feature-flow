@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { ARTIFACT_NAMES, type ArtifactName, type FeatureStage, type FeatureState, type RunStage } from "../src/domain.ts";
 import { isAmendNoEdit, namingPrefix, normalizeFeatureId, validateNamingCommand } from "../src/identity.ts";
 import { composeContinuationContext } from "../src/plan.ts";
-import { FeatureConfig } from "../src/config.ts";
+import { FeatureConfig, type WorkerKind, workerRoute } from "../src/config.ts";
 import { FeatureStore, featureDir } from "../src/store.ts";
 import { Workflow } from "../src/workflow.ts";
 import { Planner } from "../src/planner.ts";
@@ -321,8 +321,20 @@ export default function featureFlow(pi: ExtensionAPI): void {
     else pi.sendUserMessage(kickoff, { deliverAs: "followUp" });
   }
 
+  async function confirmFableSubagent(ctx: ExtensionContext, purpose: string, model: string): Promise<void> {
+    if (!/fable/i.test(model)) return;
+    if (!ctx.hasUI) throw new Error(`The ${purpose} requires explicit Fable approval in an interactive Pi session.`);
+    const approved = await ctx.ui.confirm(
+      "Run a Fable subagent?",
+      `This run will use ${model} for ${purpose}. Approval applies only to this run.`,
+    );
+    if (!approved) throw new Error(`Fable approval was not granted for ${purpose}.`);
+  }
+
   async function runPlanStage(featureId: string, ctx: ExtensionContext): Promise<string> {
-    ctx.ui.notify("Running the integrated planner…", "info");
+    const config = await getConfig();
+    await confirmFableSubagent(ctx, "integrated feature planning", config.routes.planner.model);
+    ctx.ui.notify("Running the planner and publishing the result to Tailscale…", "info");
     const url = await run(Effect.flatMap(Workflow, (workflow) => workflow.runPlan(featureId, ctx.cwd, ctx.sessionManager.getSessionId() ?? null)));
     await appendArtifact(featureId, "threadLog", "Plan published", `- Artifact: ${url}`, "extension");
     ctx.ui.notify(`Review the plan: ${url}`, "info");
@@ -330,17 +342,17 @@ export default function featureFlow(pi: ExtensionAPI): void {
     return url;
   }
 
-  async function publishStage(featureId: string, ctx: ExtensionContext): Promise<string> {
-    ctx.ui.notify("Publishing the plan for review…", "info");
-    const url = await run(Effect.flatMap(Workflow, (workflow) => workflow.publishPlan(featureId)));
-    ctx.ui.notify(`Review the plan: ${url}`, "info");
-    updateUi(ctx, await loadFeature(featureId));
-    return url;
-  }
-
-  async function spawnStage(featureId: string, stage: RunStage, task: string, ctx: ExtensionContext | null): Promise<void> {
+  async function spawnStage(featureId: string, stage: RunStage, task: string, ctx: ExtensionContext | null, workerKind: WorkerKind = "sol"): Promise<void> {
+    const config = await getConfig();
+    let route = config.routes.adversary;
+    if (stage === "implementation") route = workerRoute(config, workerKind);
+    else if (stage === "validation") route = config.routes.validator;
+    if (/fable/i.test(route.model)) {
+      if (!ctx) throw new Error(`A Fable ${stage} run requires explicit approval in an interactive Pi session.`);
+      await confirmFableSubagent(ctx, `feature ${stage}`, route.model);
+    }
     const result = await run(Effect.flatMap(Workflow, (workflow) =>
-      workflow.spawnStage(featureId, stage, task, ctx?.cwd ?? null, ctx?.sessionManager.getSessionId() ?? null)
+      workflow.spawnStage(featureId, stage, task, ctx?.cwd ?? null, ctx?.sessionManager.getSessionId() ?? null, workerKind)
     ));
     if (ctx) {
       ctx.ui.notify(`Started ${stage}${result.runId ? ` (${result.runId})` : ""}`, "info");
@@ -359,7 +371,7 @@ export default function featureFlow(pi: ExtensionAPI): void {
     return review;
   }
 
-  async function decideCheckpoint(featureId: string, decision: "approve" | "reject", note: string, ctx: ExtensionCommandContext | ExtensionContext): Promise<void> {
+  async function decideCheckpoint(featureId: string, decision: "approve" | "reject", note: string, ctx: ExtensionCommandContext | ExtensionContext, workerKind: WorkerKind = "sol"): Promise<void> {
     const state = await loadFeature(featureId);
     const confirmed = await ctx.ui.confirm(
       `${decision === "approve" ? "Approve" : "Reject"} ${state.checkpoint.kind} checkpoint?`,
@@ -371,7 +383,7 @@ export default function featureFlow(pi: ExtensionAPI): void {
     ));
     if (decision === "approve" && updated.checkpoint.kind === "plan") {
       updateUi(ctx, updated);
-      await spawnStage(featureId, "implementation", "Implement the complete approved plan; validation will start automatically afterward.", ctx);
+      await spawnStage(featureId, "implementation", "Implement the complete approved plan; validation will start automatically afterward.", ctx, workerKind);
       return;
     }
     updateUi(ctx, await loadFeature(featureId));
@@ -442,9 +454,14 @@ export default function featureFlow(pi: ExtensionAPI): void {
 
     if (command === "status") return showStatus(featureId, ctx);
     if (command === "plan") { const url = await runPlanStage(featureId, ctx); ctx.ui.setEditorText(`Review the plan: ${url}`); return; }
-    if (command === "publish") { const url = await publishStage(featureId, ctx); ctx.ui.setEditorText(`Review the plan: ${url}`); return; }
     if (command === "oracle" || command === "adversary") { const review = await runReview(featureId, command, ctx); ctx.ui.setEditorText(review); return; }
-    if (command === "implement") return spawnStage(featureId, "implementation", args.join(" ") || "Implement the complete approved plan.", ctx);
+    if (command === "implement") {
+      const workerFlag = args.indexOf("--worker");
+      const requestedWorker = workerFlag >= 0 ? args[workerFlag + 1] : "sol";
+      if (requestedWorker !== "sol" && requestedWorker !== "fable") throw new Error("--worker must be sol or fable.");
+      if (workerFlag >= 0) args.splice(workerFlag, 2);
+      return spawnStage(featureId, "implementation", args.join(" ") || "Implement the complete approved plan.", ctx, requestedWorker);
+    }
     if (command === "validate") return spawnStage(featureId, "validation", args.join(" ") || "Validate the actual diff against the approved plan.", ctx);
     if (command === "unlock") {
       const current = await loadFeature(featureId);
@@ -456,19 +473,26 @@ export default function featureFlow(pi: ExtensionAPI): void {
       updateUi(ctx, await loadFeature(featureId));
       return;
     }
-    if (command === "approve" || command === "reject") return decideCheckpoint(featureId, command, args.join(" "), ctx);
+    if (command === "approve" || command === "reject") {
+      const workerFlag = args.indexOf("--worker");
+      const requestedWorker = workerFlag >= 0 ? args[workerFlag + 1] : "sol";
+      if (requestedWorker !== "sol" && requestedWorker !== "fable") throw new Error("--worker must be sol or fable.");
+      if (workerFlag >= 0) args.splice(workerFlag, 2);
+      if (command === "reject" && requestedWorker === "fable") throw new Error("--worker applies only to plan approval.");
+      return decideCheckpoint(featureId, command, args.join(" "), ctx, requestedWorker);
+    }
     if (command === "followup") {
       const task = args.join(" ") || `Continue work on ${namingPrefix(state)}.`;
       await createHandoffSession(state, ctx, `${task}\n\n`);
       return;
     }
-    throw new Error("Usage: /feature (selector) or /feature <new|use|list|status|plan|publish|oracle|adversary|approve|reject|implement|validate|unlock|followup|resume|archive|recover>");
+    throw new Error("Usage: /feature (selector) or /feature <new|use|list|status|plan|oracle|adversary|approve|reject|implement|validate|unlock|followup|resume|archive|recover>");
   }
 
   pi.registerCommand("feature", {
     description: "Open the feature selector, create a feature request, or use recovery controls",
     getArgumentCompletions: (prefix) =>
-      ["new", "use", "list", "status", "plan", "publish", "oracle", "adversary", "approve", "reject", "implement", "validate", "unlock", "followup", "resume", "archive", "recover"]
+      ["new", "use", "list", "status", "plan", "oracle", "adversary", "approve", "reject", "implement", "validate", "unlock", "followup", "resume", "archive", "recover"]
         .filter((value) => value.startsWith(prefix))
         .map((value) => ({ value, label: value })),
     handler: async (args, ctx) => {
@@ -486,11 +510,12 @@ export default function featureFlow(pi: ExtensionAPI): void {
     promptSnippet: "Run the feature workflow only after the user explicitly triggers it; never activate it based on task size alone",
     promptGuidelines: WORKFLOW_GUIDELINES,
     parameters: Type.Object({
-      action: StringEnum(["start", "plan", "publish", "request_approval", "reject", "implement", "validate", "review", "status"] as const),
+      action: StringEnum(["start", "plan", "request_approval", "reject", "implement", "validate", "review", "status"] as const),
       workItem: Type.Optional(Type.String()),
       title: Type.Optional(Type.String({ description: "Concise descriptive display title, at most 96 characters; never copy the complete request" })),
       package: Type.Optional(Type.String()),
       note: Type.Optional(Type.String()),
+      worker: Type.Optional(StringEnum(["sol", "fable"] as const, { description: "Implementation worker. Defaults to sol; choose fable only when the user explicitly requests it." })),
       reviewKind: Type.Optional(StringEnum(["oracle", "adversary"] as const)),
     }),
     executionMode: "sequential",
@@ -512,18 +537,21 @@ export default function featureFlow(pi: ExtensionAPI): void {
         const url = await runPlanStage(featureId, ctx);
         return { content: [{ type: "text", text: `Plan published for human review: ${url}\nShow this URL to the user. The plan checkpoint remains pending.` }], details: { featureId, url } };
       }
-      if (params.action === "publish") {
-        const url = await publishStage(featureId, ctx);
-        return { content: [{ type: "text", text: `Plan artifact published: ${url}\nShow this URL to the user.` }], details: { featureId, url } };
-      }
       if (params.action === "request_approval" || params.action === "reject") {
-        await decideCheckpoint(featureId, params.action === "reject" ? "reject" : "approve", params.note || "", ctx as ExtensionCommandContext);
+        await decideCheckpoint(
+          featureId,
+          params.action === "reject" ? "reject" : "approve",
+          params.note || "",
+          ctx as ExtensionCommandContext,
+          params.action === "request_approval" ? params.worker ?? "sol" : "sol",
+        );
         const state = await loadFeature(featureId);
         return { content: [{ type: "text", text: `Human checkpoint result: ${state.checkpoint.kind}/${state.checkpoint.status}.` }], details: { featureId, checkpoint: state.checkpoint } };
       }
       if (params.action === "implement") {
-        await spawnStage(featureId, "implementation", params.package || "Implement the complete approved plan.", ctx);
-        return { content: [{ type: "text", text: "Implementation worker started for the complete approved plan; validation will follow automatically." }], details: { featureId } };
+        const workerKind = params.worker ?? "sol";
+        await spawnStage(featureId, "implementation", params.package || "Implement the complete approved plan.", ctx, workerKind);
+        return { content: [{ type: "text", text: `${workerKind === "fable" ? "Fable" : "Sol"} implementation worker started for the complete approved plan; validation will follow automatically.` }], details: { featureId, workerKind } };
       }
       if (params.action === "validate") {
         await spawnStage(featureId, "validation", params.note || "Validate the actual diff.", ctx);
