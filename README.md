@@ -28,6 +28,9 @@ behind every change.
 
 - The workflow **never self-activates**. It starts only from `/feature new` or
   an explicit user request. Ordinary sessions stay direct.
+- The active Pi session keeps the model and thinking level it started with.
+  Feature-specific model routes apply only to subagents and external planner
+  processes; the workflow never calls Pi's main-session model controls.
 - Every feature is identified by **Jira key → PR → feature name**. While a
   feature is active, bash `git`/`gh` calls are checked: branches must start
   `<KEY>-`; commits and PR titles must start with `<KEY>` followed by a space.
@@ -146,8 +149,6 @@ All keys optional; defaults shown:
 ```jsonc
 {
   "routes": {
-    "interactivePlanning": { "model": "openai-codex/gpt-5.6-sol",   "thinking": "high" },
-    "execution":           { "model": "openai-codex/gpt-5.6-terra", "thinking": "high" },
     "worker":              { "model": "openai-codex/gpt-5.6-terra", "thinking": "high" },
     "validator":           { "model": "openai-codex/gpt-5.6-terra", "thinking": "high" },
     "adversary":           { "model": "openai-codex/gpt-5.6-sol",   "thinking": "high" },
@@ -174,12 +175,16 @@ All keys optional; defaults shown:
 }
 ```
 
+`routes` configures only isolated workers/reviewers and external CLI planners.
+Interactive planning stays on the model already selected in the main Pi
+session. Legacy `interactivePlanning` and `execution` keys are ignored.
+
 ## Development
 
 ```bash
 npm install
 npm run typecheck
-npm test          # node --test, 42 unit tests over the pure core + store
+npm test          # node --test, 43 unit tests over the pure core + store
 ```
 
 Layout: `src/` Effect services and pure logic · `extensions/` pi entry points ·

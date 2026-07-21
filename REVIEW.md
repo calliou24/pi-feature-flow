@@ -41,12 +41,14 @@ the execution.
 ## 2. What was structurally wrong
 
 ### 2.1 A 772-line monolith
+
 `index.ts` mixed the state machine, pi-subagents RPC plumbing, TUI widgets,
 naming enforcement, session bookkeeping, artifact publishing, model switching,
 slash-command parsing, and two tool definitions. Nothing was independently
 testable except what had been manually extracted (`naming.ts`, `artifact.ts`).
 
 ### 2.2 Dead configuration (the worst bug)
+
 `~/.pi/agent/feature-system/config.json` declared a complete `routes` block —
 and **nothing ever read it**. `modelRoute()` in `index.ts` hardcoded
 `openai-codex/gpt-5.6-*` strings, and `switchMainModel()` hardcoded the
@@ -57,6 +59,7 @@ is a schema-validated `FeatureConfig` service with defaults; every model
 reference resolves through it.
 
 ### 2.3 Three data planes in one Markdown file
+
 `thread-log.md` served as (a) human narrative, (b) machine ledger — JSON blocks
 appended via `appendLedger` — and (c) a per-turn snapshot dump. It grew without
 bound and was fed back into prompts via `slice(-5000)`, which happily cuts a
@@ -64,12 +67,14 @@ JSON block in half. **Fixed:** machine events go to `ledger.jsonl`
 (append-only JSONL); `thread-log.md` keeps only human-readable sections.
 
 ### 2.4 Revision meant nothing
+
 `appendArtifact` bumped `state.revision` on *every* append — including the
 automatic per-turn snapshot — so the revision could not be used as a
 concurrency token. **Fixed:** only state mutations bump the revision; artifact
 appends do not (covered by a test).
 
 ### 2.5 No project hygiene
+
 No `package.json`, no lockfile, no VCS, tests were ad-hoc `.mjs` harnesses in a
 hidden dotfile directory, and one of them (`plan-artifact.test.mjs`) shadowed a
 directory listing bug. **Fixed:** proper pi package, `npm test` via `node --test`,
@@ -118,27 +123,27 @@ typecheck via `tsc --noEmit`, git repo.
 
 ## 4. What was genuinely good (kept intact)
 
-- **The execution lease.** Reserve-before-spawn, release-on-definitive-failure,
++ **The execution lease.** Reserve-before-spawn, release-on-definitive-failure,
   *hold-on-timeout* (an RPC timeout is an unknown outcome — the child may be
   alive), human `/feature unlock` with confirmation. The subtle comment about
   never evicting a live lock owner by age is correct and preserved.
-- **The plan gate.** `sha256(plan.md)` + frontmatter revision recorded at
++ **The plan gate.** `sha256(plan.md)` + frontmatter revision recorded at
   publication and re-verified at approval and again at implementation-lease
   time — the human provably approved the bytes that will be implemented.
-- **Jira → PR → feature identity resolution** and prefix enforcement.
-- **Fresh-context worker/validator with the `PASS`/`BLOCKED` first-token
++ **Jira → PR → feature identity resolution** and prefix enforcement.
++ **Fresh-context worker/validator with the `PASS`/`BLOCKED` first-token
   contract**, and auto-validation after implementation.
-- **Session pointer + handoff sessions** (fresh session seeded with composed
++ **Session pointer + handoff sessions** (fresh session seeded with composed
   continuation context instead of resuming stale threads) — exactly what the
   user asked for in the `21-55` session.
-- **The ask_user TUI** (tabs, review step, custom answers, numeric shortcuts).
++ **The ask_user TUI** (tabs, review step, custom answers, numeric shortcuts).
   Extracted to its own extension so it can ship/enable independently.
 
 ## 5. Architecture of the rewrite
 
 Effect-TS service graph (all in `src/`):
 
-```
+```text
 PiApi (Context.Tag — the live ExtensionAPI)
  ├─ SubagentGateway   RPC spawn over pi-subagents events, typed outcomes
  ├─ Planner           external CLI plan/oracle (config routes)
@@ -148,22 +153,21 @@ FeatureConfig          schema-validated config with total defaults
 FeatureStore           locked, atomic, schema-decoded persistence + ledger
 ```
 
-- Typed failures (`Data.TaggedError`) replace string-matched `Error`s:
++ Typed failures (`Data.TaggedError`) replace string-matched `Error`s:
   `SpawnFailed` carries `outcome: "definitive" | "unknown"` so the lease
   decision reads as policy, not comment archaeology.
-- `FeatureState` is decoded on every read (`Schema.parseJson`) — corrupt state
++ `FeatureState` is decoded on every read (`Schema.parseJson`) — corrupt state
   fails loudly as `StateCorrupt` instead of propagating `undefined`.
-- The extension entry (`extensions/feature-flow.ts`) owns all side effects the
-  workflow must not know about: TUI, model switching, handoff sessions, hooks.
-- Pure logic (identity, naming guard, plan gate, verdict, continuation) is
++ The extension entry (`extensions/feature-flow.ts`) owns UI, handoff sessions,
+  and lifecycle hooks. Model routes are confined to subagents and external CLI
+  processes; the developer's main-session model remains untouched.
++ Pure logic (identity, naming guard, plan gate, verdict, continuation) is
   dependency-free and fully unit-tested (34 tests).
 
 ## 6. Known remaining risks
 
-- The pi-subagents RPC contract (`subagents:rpc:v1:*`) and async-complete event
++ The pi-subagents RPC contract (`subagents:rpc:v1:*`) and async-complete event
   shape are private coupling; a pi-subagents major bump can break spawning.
-- The `PASS`/`BLOCKED` verdict is prompt-contractual; a model that prefixes
++ The `PASS`/`BLOCKED` verdict is prompt-contractual; a model that prefixes
   pleasantries produces a false `BLOCKED` (fail-safe direction, at least).
-- The claude-artifact publisher remains inherently brittle — use it knowingly.
-- `switchMainModel` still changes the developer's main-session model on
-  approval; it now honors config, but it is still a surprising side effect.
++ The claude-artifact publisher remains inherently brittle — use it knowingly.

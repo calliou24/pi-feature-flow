@@ -23,10 +23,6 @@ const CliRoute = Schema.Struct({
 export type CliRoute = typeof CliRoute.Type;
 
 const Routes = Schema.Struct({
-  /** Main-session model while interviewing/refining assumptions. */
-  interactivePlanning: Schema.optionalWith(ModelRoute, { default: () => ({ model: "openai-codex/gpt-5.6-sol", thinking: "high" as const }) }),
-  /** Main-session model after plan approval. */
-  execution: Schema.optionalWith(ModelRoute, { default: () => ({ model: "openai-codex/gpt-5.6-terra", thinking: "high" as const }) }),
   /** Subagent that implements the approved plan. */
   worker: Schema.optionalWith(ModelRoute, { default: () => ({ model: "openai-codex/gpt-5.6-terra", thinking: "high" as const }) }),
   /** Fresh-context validator subagent. */
