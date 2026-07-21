@@ -70,6 +70,18 @@ const FeatureFlowConfig = Schema.Struct({
     }),
     { default: () => ({ implementationMaxTurns: 18, validationMaxTurns: 10, spawnTimeoutMs: 900_000, rpcReplyTimeoutMs: 20_000 }) },
   ),
+  archive: Schema.optionalWith(
+    Schema.Struct({
+      /** Private repository under the currently authenticated GitHub account, or an explicit owner/name. */
+      repository: Schema.optionalWith(Schema.String, { default: () => "pi-feature-archives" }),
+      branch: Schema.optionalWith(Schema.String, { default: () => "main" }),
+      /** Roots inspected for feature-named Git worktrees. Keep this list narrow on very large home directories. */
+      searchRoots: Schema.optionalWith(Schema.Array(Schema.String), { default: () => [homedir()] }),
+      /** Extra context-only files/directories. Supports {featureId} and {workItem}; relative paths use the feature project cwd. */
+      extraPaths: Schema.optionalWith(Schema.Array(Schema.String), { default: () => [] }),
+    }),
+    { default: () => ({ repository: "pi-feature-archives", branch: "main", searchRoots: [homedir()], extraPaths: [] }) },
+  ),
 });
 export type FeatureFlowConfig = typeof FeatureFlowConfig.Type;
 

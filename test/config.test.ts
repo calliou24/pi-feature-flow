@@ -20,6 +20,9 @@ describe("feature config", () => {
     assert.equal(config.budgets.implementationMaxTurns, 18);
     assert.match(config.routes.worker.model, /\//);
     assert.equal(config.routes.planner.command, "claude");
+    assert.equal(config.archive.repository, "pi-feature-archives");
+    assert.equal(config.archive.branch, "main");
+    assert.ok(config.archive.searchRoots.length > 0);
   });
 
   it("overrides selectively from config.json", async () => {
@@ -28,11 +31,14 @@ describe("feature config", () => {
       routes: { worker: { model: "anthropic/claude-fable-5", thinking: "high" } },
       planArtifact: { publisher: "claude-artifact" },
       turnSnapshot: "off",
+      archive: { repository: "private-feature-context", extraPaths: ["reports/{featureId}.md"] },
     }));
     const config = await load();
     assert.equal(config.routes.worker.model, "anthropic/claude-fable-5");
     assert.equal(config.planArtifact.publisher, "claude-artifact");
     assert.equal(config.turnSnapshot, "off");
+    assert.equal(config.archive.repository, "private-feature-context");
+    assert.deepEqual(config.archive.extraPaths, ["reports/{featureId}.md"]);
     // untouched defaults survive
     assert.equal(config.routes.adversary.model, "openai-codex/gpt-5.6-sol");
     assert.equal(config.budgets.rpcReplyTimeoutMs, 20_000);

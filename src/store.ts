@@ -18,6 +18,7 @@ import {
 } from "./domain.ts";
 import { identifyWorkItem, normalizeTitle } from "./identity.ts";
 import { FEATURES_ROOT, FEATURE_FLOW_ROOT } from "./config.ts";
+import { assertArchiveUnlocked } from "./archive-lock.ts";
 
 const LOCK_ATTEMPTS = 80;
 const LOCK_RETRY_MS = 25;
@@ -151,8 +152,21 @@ function releaseLock(lock: LockHandle): Effect.Effect<void> {
   });
 }
 
+function ensureNotArchiving(featureId: string): Effect.Effect<void, FeatureBusy> {
+  return Effect.tryPromise({
+    try: () => assertArchiveUnlocked(featureId),
+    catch: () => new FeatureBusy({ featureId }),
+  });
+}
+
 function withLock<A, E>(featureId: string, operation: Effect.Effect<A, E>): Effect.Effect<A, E | FeatureBusy | IoFailure> {
-  return Effect.acquireUseRelease(acquireLock(featureId), () => operation, releaseLock);
+  return ensureNotArchiving(featureId).pipe(
+    Effect.zipRight(Effect.acquireUseRelease(
+      acquireLock(featureId),
+      () => ensureNotArchiving(featureId).pipe(Effect.zipRight(operation)),
+      releaseLock,
+    )),
+  );
 }
 
 // ─── State codec ─────────────────────────────────────────────────────────────
@@ -209,6 +223,14 @@ export class FeatureStore extends Effect.Service<FeatureStore>()("FeatureStore",
     // Reads do not need the advisory lock: state writes are atomic renames.
     const load = (featureId: string) => loadUnlocked(featureId);
 
+    /** Archive-only critical section. The archive lock is already held, so this intentionally bypasses the archive guard. */
+    const withArchiveExclusive = <A>(featureId: string, run: () => Promise<A>) =>
+      Effect.acquireUseRelease(
+        acquireLock(featureId),
+        () => Effect.tryPromise({ try: run, catch: (cause) => cause instanceof Error ? cause : new Error(String(cause)) }),
+        releaseLock,
+      );
+
     /** Read-modify-write under the feature lock. `mutate` may throw to abort. */
     const update = (featureId: string, mutate: (draft: FeatureDraft) => void) =>
       withLock(featureId, Effect.gen(function* () {
@@ -217,12 +239,15 @@ export class FeatureStore extends Effect.Service<FeatureStore>()("FeatureStore",
         return yield* persist(featureId, draft);
       }));
 
-    const appendLedger = (featureId: string, event: Record<string, unknown>) =>
+    const appendLedgerUnlocked = (featureId: string, event: Record<string, unknown>) =>
       io("append-ledger", ledgerPath(featureId), async () => {
         const path = ledgerPath(featureId);
         await assertSafeManagedPath(path);
         await appendFile(path, `${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`, { encoding: "utf8", mode: 0o600 });
       });
+
+    const appendLedger = (featureId: string, event: Record<string, unknown>) =>
+      withLock(featureId, appendLedgerUnlocked(featureId, event));
 
     const readArtifact = (featureId: string, artifact: ArtifactName) =>
       io("read-artifact", artifactPath(featureId, artifact), async () => {
@@ -233,13 +258,13 @@ export class FeatureStore extends Effect.Service<FeatureStore>()("FeatureStore",
 
     /** Appends a human-readable section. Does not touch state.json: artifact appends are not state transitions. */
     const appendArtifact = (featureId: string, artifact: ArtifactName, heading: string, body: string, author: string) =>
-      io("append-artifact", artifactPath(featureId, artifact), async () => {
+      withLock(featureId, io("append-artifact", artifactPath(featureId, artifact), async () => {
         const path = artifactPath(featureId, artifact);
         await assertSafeManagedPath(path);
         const section = `\n## ${heading}\n\n_Recorded ${new Date().toISOString()} by ${author}._\n\n${body.trim()}\n`;
         await appendFile(path, section, { encoding: "utf8", mode: 0o600 });
         await chmod(path, 0o600).catch(() => undefined);
-      });
+      }));
 
     const replaceArtifact = (featureId: string, artifact: ArtifactName, body: string, author: string) =>
       withLock(featureId, Effect.gen(function* () {
@@ -285,7 +310,7 @@ export class FeatureStore extends Effect.Service<FeatureStore>()("FeatureStore",
             const body = `${frontmatter(featureId, identity.key, "extension")}\n# ${ARTIFACT_TITLES[artifact]}\n\n`;
             yield* io("write-artifact", artifactPath(featureId, artifact), () => atomicWrite(artifactPath(featureId, artifact), body));
           }
-          yield* appendLedger(featureId, { type: "feature.created", cwd, title, workItem: identity });
+          yield* appendLedgerUnlocked(featureId, { type: "feature.created", cwd, title, workItem: identity });
           return state;
         }));
       });
@@ -339,6 +364,6 @@ export class FeatureStore extends Effect.Service<FeatureStore>()("FeatureStore",
         await Promise.all([FEATURE_FLOW_ROOT, FEATURES_ROOT].map((path) => chmod(path, 0o700).catch(() => undefined)));
       });
 
-    return { load, update, create, list, appendLedger, readArtifact, appendArtifact, replaceArtifact, reserveExecution, releaseExecution, ensureRoots };
+    return { load, withArchiveExclusive, update, create, list, appendLedger, readArtifact, appendArtifact, replaceArtifact, reserveExecution, releaseExecution, ensureRoots };
   }),
 }) {}

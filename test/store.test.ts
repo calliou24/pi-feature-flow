@@ -9,6 +9,7 @@ import { Effect, Either } from "effect";
 process.env.PI_FEATURE_FLOW_ROOT = mkdtempSync(join(tmpdir(), "pi-feature-flow-test-"));
 
 const { FeatureStore, featureDir } = await import("../src/store.ts");
+const { withArchiveLock } = await import("../src/archive-lock.ts");
 
 const run = <A, E>(effect: Effect.Effect<A, E, InstanceType<typeof FeatureStore>>): Promise<A> =>
   Effect.runPromise(effect.pipe(Effect.provide(FeatureStore.Default)) as Effect.Effect<A, E, never>).catch((error) => {
@@ -89,6 +90,19 @@ describe("feature store", () => {
       store.reserveExecution("crm-42", lease, () => Effect.fail(new Error("not ready")))
     ).pipe(Effect.either));
     assert.ok(Either.isLeft(rejected));
+  });
+
+  it("blocks feature state and artifact writes while an archive lock is held", async () => {
+    await withArchiveLock("crm-42", async () => {
+      const update = await run(Effect.flatMap(FeatureStore, (store) =>
+        store.update("crm-42", (draft) => { draft.status = "blocked"; })
+      ).pipe(Effect.either));
+      assert.ok(Either.isLeft(update));
+      const append = await run(Effect.flatMap(FeatureStore, (store) =>
+        store.appendArtifact("crm-42", "decisions", "Unsafe", "Must not append.", "test")
+      ).pipe(Effect.either));
+      assert.ok(Either.isLeft(append));
+    });
   });
 
   it("lists features sorted by recency and skips malformed ones", async () => {

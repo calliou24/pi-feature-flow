@@ -52,7 +52,7 @@ export function planningKickoff(state: FeatureState): string {
   return [
     `Continue the integrated planning workflow for ${namingPrefix(state)} — ${state.title}.`,
     "Read assumptions.md, decisions.md, the existing conversation, and relevant repository context.",
-    "Ask only meaningful unknowns that can change the architecture or acceptance behavior, one focused ask_user question at a time with a Custom answer. Do not re-ask facts already available.",
+    "Ask only meaningful unknowns that can change the architecture or acceptance behavior. Group independent questions into one ask_user_question call and do not re-ask facts already available.",
     "When blockers are resolved, call feature_workflow with action=plan; the planner will create and publish the review artifact.",
     "Do not ask the developer to type slash commands.",
   ].join(" ");
@@ -77,7 +77,7 @@ export function turnContext(state: FeatureState): string {
     `Naming is mandatory: branches start \`${prefix}-\`; commit messages and PR titles start \`${prefix} \`.`,
     `Memory root: ${featureDir(state.featureId)}`,
     "Read only assumptions.md, decisions.md, plan.md, and relevant thread-log.md excerpts. Git/diff/PR are implementation evidence.",
-    "Do not silently change accepted decisions or broaden scope. Use ask_user for unresolved user decisions.",
+    "Do not silently change accepted decisions or broaden scope. Use ask_user_question for unresolved user decisions.",
     "Advance the lifecycle autonomously with feature_workflow; never ask the developer to orchestrate slash commands.",
   ].join("\n");
 }
@@ -86,8 +86,8 @@ export const WORKFLOW_GUIDELINES = [
   "Never call feature_workflow start unless the user explicitly asks to start/use the feature workflow or invokes /feature new. New sessions and ordinary requests stay direct.",
   "Do not infer workflow consent from a Jira key, PR, multiple files, complexity, or risk.",
   "After the explicit trigger, infer the Jira key, PR, or stable feature name and advance the workflow autonomously so the developer does not orchestrate a slash-command chain.",
-  "Ask one focused ask_user identity question only when the user triggered the workflow but identity cannot be inferred.",
-  "During planning, ask only meaningful unknowns with ask_user. When resolved, call feature_workflow plan; always give the returned plan artifact URL to the user.",
+  "Ask one focused ask_user_question identity question only when the user triggered the workflow but identity cannot be inferred.",
+  "During planning, ask only meaningful unknowns with ask_user_question. Group independent questions into one invocation. When resolved, call feature_workflow plan; always give the returned plan artifact URL to the user.",
   "Natural-language plan approval still requires action=request_approval so the human sees the TUI confirmation. Never approve the plan yourself.",
   "After plan approval, implementation and fresh validation run automatically with no package-review or final-accept checkpoints. Surface blockers, but do not ask for routine acceptance.",
 ];
