@@ -25,15 +25,17 @@ describe("feature config", () => {
     const config = await load();
     assert.equal(config.planArtifact.servePath, "/feature-plans");
     assert.equal(config.turnSnapshot, "compact");
-    assert.equal(config.budgets.planningMaxTurns, 12);
+    assert.equal(config.version, 5);
+    assert.equal(config.budgets.adversaryMaxTurns, 10);
+    assert.equal("planningMaxTurns" in config.budgets, false);
     assert.equal(config.budgets.implementationMaxTurns, 18);
     assert.deepEqual(config.routes.worker, { model: "openai-codex/gpt-5.6-sol", thinking: "low" });
     assert.deepEqual(config.routes.fableWorker, { model: "anthropic/claude-fable-5", thinking: "low" });
     assert.deepEqual(workerRoute(config, "sol"), config.routes.worker);
     assert.deepEqual(workerRoute(config, "fable"), config.routes.fableWorker);
     assert.deepEqual(config.routes.validator, { model: "openai-codex/gpt-5.6-sol", thinking: "high" });
-    assert.deepEqual(Object.keys(config.routes).sort((left, right) => left.localeCompare(right)), ["adversary", "fableWorker", "oracle", "planner", "validator", "worker"]);
-    assert.deepEqual(config.routes.planner, { model: "anthropic/claude-fable-5", thinking: "high" });
+    assert.deepEqual(Object.keys(config.routes).sort((left, right) => left.localeCompare(right)), ["adversary", "fableWorker", "validator", "worker"]);
+    assert.deepEqual(config.routes.adversary, { model: "anthropic/claude-fable-5", thinking: "high" });
     assert.equal(config.archive.repository, "pi-feature-archives");
     assert.equal(config.archive.branch, "main");
     assert.ok(config.archive.searchRoots.length > 0);
@@ -62,7 +64,7 @@ describe("feature config", () => {
     assert.equal(config.archive.repository, "private-feature-context");
     assert.deepEqual(config.archive.extraPaths, ["reports/{featureId}.md"]);
     // untouched defaults survive
-    assert.equal(config.routes.adversary.model, "openai-codex/gpt-5.6-sol");
+    assert.equal(config.routes.adversary.model, "anthropic/claude-fable-5");
     assert.equal(config.budgets.rpcReplyTimeoutMs, 20_000);
   });
 

@@ -1,29 +1,12 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { Effect } from "effect";
-import { PlannerFailed, PublishFailed, type FeatureState } from "./domain.ts";
+import { PublishFailed, type FeatureState } from "./domain.ts";
 import { FeatureConfig } from "./config.ts";
 import { PiApi, piExec } from "./pi-api.ts";
 import { artifactPath, featureDir } from "./store.ts";
-import { oraclePrompt, plannerPrompt } from "./prompts.ts";
-import { SubagentGateway } from "./subagents.ts";
 
-const PLANNER_TIMEOUT_MS = 600_000;
 const PUBLISH_TIMEOUT_MS = 15_000;
-
-export interface PlanOutput {
-  markdown: string;
-  runId: string | null;
-  asyncDir: string | null;
-  sessionPath: string | null;
-  transcriptPath: string | null;
-}
-
-function normalizePlanMarkdown(output: string): string {
-  const trimmed = output.trim();
-  const fenced = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i);
-  return (fenced?.[1] ?? trimmed).trim();
-}
 
 export function tailscaleDnsName(rawStatus: string): string | null {
   try {
@@ -34,57 +17,16 @@ export function tailscaleDnsName(rawStatus: string): string | null {
   }
 }
 
-function normalizedServePath(value: string): string | null {
+export function normalizedServePath(value: string): string | null {
   const path = `/${value.trim().replace(/^\/+|\/+$/g, "")}`;
   return /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(path) ? path : null;
 }
 
-/**
- * Integrated planner and tailnet publisher. Planning runs through the
- * `feature-planner` Pi subagent; publication stages the exact plan behind
- * Tailscale Serve. The oracle remains an isolated external CLI route.
- */
-export class Planner extends Effect.Service<Planner>()("Planner", {
+/** Publishes the exact revisioned plan behind Tailscale Serve. */
+export class PlanPublisher extends Effect.Service<PlanPublisher>()("PlanPublisher", {
   effect: Effect.gen(function* () {
     const { config } = yield* FeatureConfig;
-    const gateway = yield* SubagentGateway;
     const pi = yield* PiApi;
-
-    const runCli = (route: { command: string; model: string; effort: string }, prompt: string, root: string, json: boolean) =>
-      piExec(route.command, [
-        "-p",
-        "--model", route.model,
-        "--effort", route.effort,
-        "--allowedTools", "Read,Grep,Glob",
-        ...(json ? ["--output-format", "json"] : []),
-        "--add-dir", root,
-        "--",
-        prompt,
-      ], { timeout: PLANNER_TIMEOUT_MS }).pipe(Effect.provideService(PiApi, pi));
-
-    const plan = (state: FeatureState, repositoryCwd: string): Effect.Effect<PlanOutput, PlannerFailed> =>
-      gateway.run({
-        agent: "feature-planner",
-        task: plannerPrompt(state, repositoryCwd),
-        model: config.routes.planner.model,
-        thinking: config.routes.planner.thinking,
-        cwd: repositoryCwd,
-        maxTurns: config.budgets.planningMaxTurns,
-      }).pipe(
-        Effect.mapError((error) => new PlannerFailed({ reason: error.message })),
-        Effect.flatMap((result) => {
-          const markdown = normalizePlanMarkdown(result.output);
-          return markdown
-            ? Effect.succeed({
-              markdown,
-              runId: result.runId,
-              asyncDir: result.asyncDir,
-              sessionPath: result.sessionPath,
-              transcriptPath: result.transcriptPath,
-            })
-            : Effect.fail(new PlannerFailed({ reason: "Planner returned no plan." }));
-        }),
-      );
 
     const publish = (state: FeatureState, planRevision: number): Effect.Effect<string, PublishFailed> =>
       Effect.gen(function* () {
@@ -121,16 +63,7 @@ export class Planner extends Effect.Service<Planner>()("Planner", {
         return `https://${dnsName}${featureServePath}/${encodeURIComponent(fileName)}`;
       });
 
-    const oracle = (state: FeatureState): Effect.Effect<string, PlannerFailed> =>
-      runCli(config.routes.oracle, oraclePrompt(state), featureDir(state.featureId), false).pipe(
-        Effect.flatMap((result) =>
-          result.code !== 0
-            ? Effect.fail(new PlannerFailed({ reason: result.stderr.trim() || "Oracle review failed." }))
-            : Effect.succeed(result.stdout.trim())
-        ),
-      );
-
-    return { plan, publish, oracle };
+    return { publish };
   }),
-  dependencies: [FeatureConfig.Default, SubagentGateway.Default],
+  dependencies: [FeatureConfig.Default],
 }) {}

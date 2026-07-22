@@ -11,37 +11,39 @@ behind every change.
 ## The flow
 
 ```
-/feature new  ──►  interactive planning (grill-me questions, ask_user_question)
-                    │  feature_workflow plan
+/feature new  ──►  main-agent planning (interview + repository evidence)
+                    │  feature_workflow plan(plan: complete Markdown)
                     ▼
-              Fable-high planner subagent
-                    │  plan.md published through Tailscale Serve
+              plan.md published through Tailscale Serve
+                    ├──► background Fable-5-high adversarial review
                     ▼
               HUMAN CHECKPOINT — approve the plan          ◄── the only gate
                     │  automatic
                     ▼
-              implementation worker (fresh context, execution lease)
-                    │  automatic
+              Sol-low implementation (fresh context, execution lease)
+                    │  [parallel-safe] packages fan out to isolated worktrees
                     ▼
-              validator (fresh context) → PASS ⇒ complete / BLOCKED ⇒ surfaced
+              validator (fresh context) → PASS ⇒ complete / BLOCKED ⇒ FIX lane
 ```
 
 - The workflow **never self-activates**. It starts only from `/feature new` or
   an explicit user request. Ordinary sessions stay direct.
 - The active Pi session keeps the model and thinking level it started with.
-  Feature-specific model routes apply to isolated subagents (plus the legacy
-  oracle CLI); the workflow never calls Pi's main-session model controls. Every
-  Fable subagent run still requires explicit one-run approval.
+  Feature-specific model routes apply only to isolated subagents; the workflow
+  never calls Pi's main-session model controls. Every Fable subagent run still
+  requires explicit one-run approval.
 - Every feature is identified by **Jira key → PR → feature name**. While a
   feature is active, bash `git`/`gh` calls are checked: branches must start
   `<KEY>-`; commits and PR titles must start with `<KEY>` followed by a space.
 - The plan the human approves is hash-pinned: if `plan.md` changes after
   publication, approval and implementation refuse until it is republished.
-- Planning, implementation, and validation run as **pi-subagents**. The
-  implementation default is Sol low; Fable low is available only when the user
-  explicitly requests it. Implementation/validation background runs are guarded
-  by an execution lease (no double-writers; unknown spawn outcomes keep the
-  lease until `/feature unlock`).
+- The main agent authors the plan. Adversarial review, implementation, and
+  validation run as **pi-subagents**. The implementation default is Sol low;
+  Fable low is available only when the user explicitly requests it. Approved
+  `[parallel-safe]` packages can fan out to isolated Git worktrees with one
+  writer per worktree and one workflow execution lease/run record. Workers and
+  validators batch diagnostics once after edits/review rather than looping LSP
+  checks after every edit.
 - The exact approved plan is copied beneath `~/.pi/agent/feature-flow/published/`
   and served to tailnet members at the configured Tailscale Serve path.
 - Finished or abandoned features can be archived to a **private repository owned
@@ -52,7 +54,7 @@ behind every change.
 ## Install
 
 Requires [pi-subagents](https://github.com/nicobailon/pi-subagents) for the
-planner/worker/validator/adversary stages,
+worker/validator/adversary stages,
 [`@juicesharp/rpiv-ask-user-question`](https://www.npmjs.com/package/@juicesharp/rpiv-ask-user-question)
 for structured planning questions, and an authenticated Tailscale node with
 Tailscale Serve available for tailnet-only plan URLs.
@@ -68,16 +70,11 @@ pi install /path/to/pi-feature-flow
 
 | Command | Effect |
 | --- | --- |
-| `/feature` or `/feature list` | Selector → fresh handoff session for a feature |
-| `/feature new` | Editor opens; agent infers identity + title and starts planning |
-| `/feature use\|resume <id>` | Fresh handoff session with composed continuation context |
-| `/feature status` | State, checkpoint, lease, recent runs |
-| `/feature plan` | Run the Fable planner and publish its exact plan in one step |
-| `/feature approve [--worker sol\|fable]` / `reject [note]` | Decide the plan checkpoint; approval defaults to Sol implementation |
-| `/feature implement [--worker sol\|fable]` / `validate` | Manual stage runs; Sol is the implementation default |
-| `/feature oracle` / `adversary` | Architecture review (CLI) / adversarial subagent review |
+| `/feature` | Selector → fresh handoff session for a feature |
+| `/feature new` | Editor opens; agent infers identity + title and starts main-agent planning |
+| `/feature resume [id]` | Fresh handoff session with composed continuation context |
+| `/feature status [id]` | Compact lifecycle, plan, and run status |
 | `/feature unlock` | Clear a stuck execution lease after verifying no live worker |
-| `/feature followup [task]` | Fresh handoff session with a custom task |
 | `/feature archive [id]` | Push context to the private archive repo, verify it, then clean local feature resources |
 | `/feature recover [id]` | Restore the latest remote context archive; without an id, open the archive selector |
 
@@ -93,7 +90,7 @@ Tools exposed to the agent: `feature_workflow` (lifecycle), `feature_memory`
   features/<id>/
     state.json                   # schema-validated lifecycle state
     assumptions.md  decisions.md # durable memory (agent + interview answers)
-    plan.md                      # planner-owned, hash-pinned at approval
+    plan.md                      # main-agent-authored, hash-pinned at approval
     thread-log.md                # human-readable narrative
     ledger.jsonl                 # machine events (runs, leases, checkpoints)
   published/<id>/               # exact plan copies exposed through Tailscale Serve
@@ -154,13 +151,12 @@ All keys optional; defaults shown:
 
 ```jsonc
 {
+  "version": 5,
   "routes": {
     "worker":       { "model": "openai-codex/gpt-5.6-sol",   "thinking": "low" },
     "fableWorker":  { "model": "anthropic/claude-fable-5",   "thinking": "low" },
     "validator":    { "model": "openai-codex/gpt-5.6-sol",   "thinking": "high" },
-    "adversary":    { "model": "openai-codex/gpt-5.6-sol",   "thinking": "high" },
-    "planner":      { "model": "anthropic/claude-fable-5",   "thinking": "high" },
-    "oracle":       { "command": "claude", "model": "fable", "effort": "high" }
+    "adversary":    { "model": "anthropic/claude-fable-5",   "thinking": "high" }
   },
   "planArtifact": { "servePath": "/feature-plans" },
   "turnSnapshot": "compact",                 // off | compact | full
@@ -174,23 +170,23 @@ All keys optional; defaults shown:
     ]
   },
   "budgets": {
-    "planningMaxTurns": 12,
     "implementationMaxTurns": 18,
     "validationMaxTurns": 10,
+    "adversaryMaxTurns": 10,
     "spawnTimeoutMs": 900000,
     "rpcReplyTimeoutMs": 20000
   }
 }
 ```
 
-`routes` configures feature-flow's invoked roles; the standalone
-`feature-context` package agent defaults to Terra high in its frontmatter.
-Interactive questioning stays on
-whatever model is already selected in the main Pi session. The integrated plan
-then runs on the configured planner subagent and publishes the exact hash-pinned
-Markdown at `https://<machine>.<tailnet>.ts.net/<servePath>/...`. Existing
-Tailscale Serve handlers are preserved when this path is added. Legacy
-`interactivePlanning`, `execution`, and publisher-selection keys are ignored.
+`routes` configures feature-flow's invoked roles. Interactive questioning,
+repository inspection, and plan authoring stay on whatever model is already
+selected in the main Pi session. `feature_workflow plan` publishes the exact
+hash-pinned Markdown at
+`https://<machine>.<tailnet>.ts.net/<servePath>/...`, then offers to start the
+configured adversarial review. Existing Tailscale Serve handlers are preserved
+when this path is added. Unrecognized legacy routing and publisher-selection
+keys are ignored.
 
 ## Development
 

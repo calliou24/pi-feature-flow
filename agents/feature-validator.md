@@ -23,4 +23,6 @@ Correctness is a hard gate. Then check:
 - every added test protects a distinct plausible defect at the narrowest useful level;
 - validation evidence is real command output, not prose.
 
+Do not run diagnostics or LSP checks after every inspected change. Complete the review, then run ONE batched diagnostics pass (`lens_diagnostics mode=all` when available, otherwise the repository's linter/typecheck) and evaluate all findings at once.
+
 Do not edit project/source files. Report only evidence-backed blockers and required corrections with file/line references. Optional polish must not block. Your final response must begin with exactly `PASS` when no blocker remains, or `BLOCKED` when a required correction remains.

@@ -29,31 +29,14 @@ export function stageRole(stage: RunStage): string {
   return "feature-validator";
 }
 
-export function plannerPrompt(state: FeatureState, repositoryCwd: string): string {
-  return [
-    "You are the feature planner. Use the user conversation captured in assumptions.md, accepted decisions, repository evidence, and relevant ADRs.",
-    "Resolve the integration into the smallest coherent architecture and independently verifiable work packages.",
-    "Do not edit source files. Avoid speculative abstractions, I/O in loops, scope expansion, and redundant tests.",
-    "",
-    `Feature: ${state.title} (${namingPrefix(state)})`,
-    `Feature memory: ${featureDir(state.featureId)}`,
-    `Repository: ${repositoryCwd}`,
-    "",
-    "Return concise Markdown with headings: Goal, Accepted assumptions, Open questions, Non-goals, Architecture, Work packages, Validation, Risks.",
-    "Cite repository paths. Open questions must contain only unresolved blockers; if meaningful unknowns remain, say so rather than inventing answers.",
-  ].join("\n");
-}
-
-export function oraclePrompt(state: FeatureState): string {
-  return `Review architecture consistency for ${state.title}. Read assumptions.md, decisions.md, plan.md, relevant ADRs and repository evidence in ${featureDir(state.featureId)}. Do not edit. Return only evidence-backed blockers and smallest corrections.`;
-}
-
 export function planningKickoff(state: FeatureState): string {
   return [
-    `Continue the integrated planning workflow for ${namingPrefix(state)} — ${state.title}.`,
-    "Read assumptions.md, decisions.md, the existing conversation, and relevant repository context.",
-    "Ask only meaningful unknowns that can change the architecture or acceptance behavior. Group independent questions into one ask_user_question call and do not re-ask facts already available.",
-    "When blockers are resolved, call feature_workflow with action=plan; the planner will create and publish the review artifact.",
+    `Continue planning ${namingPrefix(state)} — ${state.title} in the main agent.`,
+    "Interview the developer only about meaningful unknowns that can change architecture or acceptance behavior; group independent questions into one ask_user_question call and do not re-ask known facts.",
+    "Read assumptions.md, decisions.md, the conversation, relevant ADRs, and repository evidence yourself.",
+    "Then author the COMPLETE plan Markdown with headings Goal, Accepted assumptions, Open questions, Non-goals, Architecture, Work packages, Validation, and Risks.",
+    "Mark independent work packages that can run concurrently with [parallel-safe].",
+    "Call feature_workflow action=plan and pass the complete Markdown in the plan parameter.",
     "Do not ask the developer to type slash commands.",
   ].join(" ");
 }
@@ -78,6 +61,7 @@ export function turnContext(state: FeatureState): string {
     `Memory root: ${featureDir(state.featureId)}`,
     "Read only assumptions.md, decisions.md, plan.md, and relevant thread-log.md excerpts. Git/diff/PR are implementation evidence.",
     "Do not silently change accepted decisions or broaden scope. Use ask_user_question for unresolved user decisions.",
+    "Batch diagnostics once after edits; after validator BLOCKED, use its report for a FIX implementation run unless scope changed and requires replanning.",
     "Advance the lifecycle autonomously with feature_workflow; never ask the developer to orchestrate slash commands.",
   ].join("\n");
 }
@@ -87,9 +71,12 @@ export const WORKFLOW_GUIDELINES = [
   "Do not infer workflow consent from a Jira key, PR, multiple files, complexity, or risk.",
   "After the explicit trigger, infer the Jira key, PR, or stable feature name and advance the workflow autonomously so the developer does not orchestrate a slash-command chain.",
   "Ask one focused ask_user_question identity question only when the user triggered the workflow but identity cannot be inferred.",
-  "During planning, ask only meaningful unknowns with ask_user_question. Group independent questions into one invocation. When resolved, call feature_workflow plan; always give the returned plan artifact URL to the user.",
+  "The main agent interviews the developer, reads repository evidence, authors the complete plan, and calls action=plan with that Markdown. The tool publishes it and starts a background Fable-5-high adversarial review; surface the returned URL immediately and the adversary findings when they arrive.",
   "Natural-language plan approval still requires action=request_approval so the human sees the TUI confirmation. Never approve the plan yourself.",
-  "After plan approval, implementation defaults to the Sol-low worker and fresh validation runs automatically with no package-review or final-accept checkpoints. Select the Fable-low worker only when the user explicitly requests Fable for that run. Surface blockers, but do not ask for routine acceptance.",
+  "After plan approval, implementation defaults to Sol low. When approved [parallel-safe] work packages can run concurrently, pass them via packages so one writer runs in each isolated Git worktree.",
+  "Validation runs automatically once after implementation. If it returns BLOCKED, start a FIX implementation run from the validator report; replan only when scope actually changed.",
+  "When a worker run ends failed or paused, diagnose and report the blocker to the developer instead of blindly respawning.",
+  "Batch diagnostics: finish edits, then run one lens_diagnostics mode=all pass and fix all findings at once; never loop LSP checks after each edit.",
 ];
 
 export const MEMORY_GUIDELINES = [
