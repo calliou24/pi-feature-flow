@@ -35,6 +35,10 @@ behind every change.
 - Every feature is identified by **Jira key → PR → feature name**. While a
   feature is active, bash `git`/`gh` calls are checked: branches must start
   `<KEY>-`; commits and PR titles must start with `<KEY>` followed by a space.
+- Starting a feature returns the planning kickoff directly to the active main
+  agent; it never queues a synthetic follow-up user prompt. Plan publication is
+  rejected after approval or while implementation/validation is active, so a
+  delayed instruction cannot regress the lifecycle.
 - The plan the human approves is hash-pinned: if `plan.md` changes after
   publication, approval and implementation refuse until it is republished.
 - The main agent authors the plan. Adversarial review, implementation, and
