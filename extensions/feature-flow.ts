@@ -679,7 +679,7 @@ export default function featureFlow(pi: ExtensionAPI): void {
 	async function beginIntegratedPlanning(
 		featureId: string,
 		ctx: ExtensionContext,
-	): Promise<void> {
+	): Promise<string> {
 		const state = await loadFeature(featureId);
 		await run(
 			Effect.flatMap(FeatureStore, (store) =>
@@ -695,9 +695,7 @@ export default function featureFlow(pi: ExtensionAPI): void {
 			),
 		);
 		await bindPiSession(featureId, "planning", ctx);
-		const kickoff = planningKickoff(state);
-		if (ctx.isIdle()) pi.sendUserMessage(kickoff);
-		else pi.sendUserMessage(kickoff, { deliverAs: "followUp" });
+		return planningKickoff(state);
 	}
 
 	async function confirmFableSubagent(
@@ -1139,12 +1137,12 @@ export default function featureFlow(pi: ExtensionAPI): void {
 					`Canonical work item: \`${namingPrefix(state)}\`. Branches start \`${namingPrefix(state)}-\`; commits and PR titles start \`${namingPrefix(state)} \`.`,
 					"extension",
 				);
-				await beginIntegratedPlanning(state.featureId, ctx);
+				const kickoff = await beginIntegratedPlanning(state.featureId, ctx);
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Started integrated planning for ${namingPrefix(state)}. Interactive planning has been queued; do not ask the developer to run slash commands.`,
+							text: `Started integrated planning for ${namingPrefix(state)}. Continue planning in this turn; no follow-up prompt was queued.\n\n${kickoff}`,
 						},
 					],
 					details: { featureId: state.featureId },

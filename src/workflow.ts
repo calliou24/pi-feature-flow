@@ -12,6 +12,7 @@ import {
 	implementationProblem,
 	markdownRevision,
 	planArtifactProblem,
+	planPublicationProblem,
 	planHash,
 	validationVerdictFromContents,
 } from "./plan.ts";
@@ -116,6 +117,10 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
 
 		const publishPlan = (featureId: string, planMarkdown: string | null) =>
 			Effect.gen(function* () {
+				const state = yield* store.load(featureId);
+				const problem = planPublicationProblem(state);
+				if (problem)
+					return yield* Effect.fail(new StageNotReady({ reason: problem }));
 				if (planMarkdown?.trim()) {
 					yield* store.replaceArtifact(
 						featureId,
