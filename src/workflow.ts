@@ -12,7 +12,7 @@ import { implementationProblem, markdownRevision, planArtifactProblem, planHash,
 import { FeatureConfig, type WorkerKind, workerRoute } from "./config.ts";
 import { FeatureStore } from "./store.ts";
 import { SubagentGateway } from "./subagents.ts";
-import { Planner } from "./planner.ts";
+import { PlanPublisher } from "./planner.ts";
 import { stagePrompt, stageRole } from "./prompts.ts";
 
 export interface RunCompletion {
@@ -21,6 +21,7 @@ export interface RunCompletion {
   succeeded: boolean;
   validationPassed: boolean | null;
   autoValidate: boolean;
+  summary: string | null;
   state: FeatureState;
 }
 
@@ -32,7 +33,7 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
   effect: Effect.gen(function* () {
     const store = yield* FeatureStore;
     const gateway = yield* SubagentGateway;
-    const planner = yield* Planner;
+    const publisher = yield* PlanPublisher;
     const { config } = yield* FeatureConfig;
 
     const publishGeneratedPlan = (featureId: string) =>
@@ -41,7 +42,9 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
         const plan = yield* store.readArtifact(featureId, "plan");
         const planRevision = markdownRevision(plan);
         if (planRevision === null) return yield* Effect.fail(new PublishFailed({ reason: "plan.md has no revision frontmatter." }));
-        const url = yield* planner.publish(state, planRevision).pipe(
+        const planBody = plan.replace(/^---\s*[\s\S]*?\n---\s*/, "").replace(/^# Implementation Plan\s*/i, "").trim();
+        if (!planBody) return yield* Effect.fail(new PublishFailed({ reason: "plan.md has no plan content." }));
+        const url = yield* publisher.publish(state, planRevision).pipe(
           Effect.tapError((error) =>
             store.update(featureId, (draft) => {
               draft.status = "planning";
@@ -61,22 +64,16 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
         return url;
       });
 
-    const runPlan = (featureId: string, cwd: string, parentSessionId: string | null) =>
+    const publishPlan = (featureId: string, planMarkdown: string | null) =>
       Effect.gen(function* () {
-        const state = yield* store.load(featureId);
-        const output = yield* planner.plan(state, cwd);
-        yield* store.replaceArtifact(featureId, "plan", output.markdown, "planner");
-        const record: SessionRecord = {
-          kind: "planner", sessionId: null, sessionFile: output.sessionPath, transcriptPath: output.transcriptPath, cwd,
-          stage: "planning", role: "feature-planner", runId: output.runId, asyncDir: output.asyncDir, parentSessionId,
-          startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), endReason: "complete",
-        };
-        yield* store.update(featureId, (draft) => {
-          draft.sessions.push(record);
-          draft.planArtifact = null;
-          draft.status = "planning";
-          draft.checkpoint = { kind: "none", status: "none", updatedAt: new Date().toISOString() };
-        });
+        if (planMarkdown?.trim()) {
+          yield* store.replaceArtifact(featureId, "plan", planMarkdown, "main-agent");
+          yield* store.update(featureId, (draft) => {
+            draft.planArtifact = null;
+            draft.status = "planning";
+            draft.checkpoint = { kind: "none", status: "none", updatedAt: new Date().toISOString() };
+          });
+        }
         return yield* publishGeneratedPlan(featureId);
       });
 
@@ -105,7 +102,7 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
         return updated;
       });
 
-    const spawnStage = (featureId: string, stage: RunStage, task: string, cwd: string | null, parentSessionId: string | null, workerKind: WorkerKind = "sol") =>
+    const spawnStage = (featureId: string, stage: RunStage, task: string, cwd: string | null, parentSessionId: string | null, workerKind: WorkerKind = "sol", packages?: readonly string[]) =>
       Effect.gen(function* () {
         const state = yield* store.load(featureId);
         const runCwd = cwd ?? state.project.cwd;
@@ -138,15 +135,30 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
         let route = config.routes.adversary;
         if (stage === "implementation") route = workerRoute(config, workerKind);
         else if (stage === "validation") route = config.routes.validator;
-        const maxTurns = stage === "implementation" ? config.budgets.implementationMaxTurns : config.budgets.validationMaxTurns;
-        const spawnResult = yield* gateway.spawn({
-          agent: stageRole(stage),
-          task: stagePrompt(state, stage, task),
-          model: route.model,
-          thinking: route.thinking,
-          cwd: runCwd,
-          maxTurns,
-        }).pipe(
+        const maxTurns = stage === "implementation"
+          ? config.budgets.implementationMaxTurns
+          : stage === "adversary"
+            ? config.budgets.adversaryMaxTurns
+            : config.budgets.validationMaxTurns;
+        const parallelPackages = stage === "implementation" && packages && packages.length >= 2 ? packages : null;
+        const spawnEffect = parallelPackages
+          ? gateway.spawnParallel(
+            parallelPackages.map((pkg) => ({
+              agent: "feature-worker",
+              task: stagePrompt(state, stage, `Implement ONLY this work package inside your assigned worktree:\n\n${pkg}`),
+            })),
+            { model: route.model, thinking: route.thinking, cwd: runCwd, maxTurns },
+            true,
+          )
+          : gateway.spawn({
+            agent: stageRole(stage),
+            task: stagePrompt(state, stage, task),
+            model: route.model,
+            thinking: route.thinking,
+            cwd: runCwd,
+            maxTurns,
+          });
+        const spawnResult = yield* spawnEffect.pipe(
           Effect.tapError((error: SpawnFailed) =>
             // A timeout is an unknown outcome: the child may be alive with the
             // reply lost. Keep the lease until a human runs /feature unlock.
@@ -174,14 +186,14 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
           }
           draft.sessions.push(record);
         });
-        yield* store.appendLedger(featureId, { type: "subagent.started", stage, runId: spawnResult.runId, asyncDir: spawnResult.asyncDir, task, ...(stage === "implementation" ? { workerKind } : {}) });
+        yield* store.appendLedger(featureId, { type: "subagent.started", stage, runId: spawnResult.runId, asyncDir: spawnResult.asyncDir, task, packageCount: parallelPackages?.length ?? 1, ...(stage === "implementation" ? { workerKind } : {}) });
         return { runId: spawnResult.runId, state: yield* store.load(featureId) };
       });
 
     /** Reconcile an async completion event against all recorded runs. */
     const completeRun = (
       runId: string,
-      result: { sessionPath?: string; transcriptPath?: string; status?: string; agent?: string } | undefined,
+      result: { sessionPath?: string; transcriptPath?: string; status?: string; agent?: string; summary?: string } | undefined,
       asyncDir: string | null,
     ): Effect.Effect<RunCompletion | null, unknown> =>
       Effect.gen(function* () {
@@ -194,7 +206,7 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
         const verdict = completedStage === "validation"
           ? yield* Effect.promise(async () => {
             const { readFile } = await import("node:fs/promises");
-            const contents: string[] = [];
+            const contents: string[] = result?.summary ? [result.summary] : [];
             for (const path of [result?.sessionPath, result?.transcriptPath]) {
               if (!path) continue;
               try { contents.push(await readFile(path, "utf8")); } catch { /* try next */ }
@@ -232,11 +244,12 @@ export class Workflow extends Effect.Service<Workflow>()("Workflow", {
           succeeded,
           validationPassed: verdict?.passed ?? null,
           autoValidate: completedStage === "implementation" && succeeded,
+          summary: result?.summary?.trim() || verdict?.summary || null,
           state,
         } satisfies RunCompletion;
       });
 
-    return { runPlan, decideCheckpoint, spawnStage, completeRun };
+    return { publishPlan, decideCheckpoint, spawnStage, completeRun };
   }),
-  dependencies: [FeatureStore.Default, SubagentGateway.Default, Planner.Default, FeatureConfig.Default],
+  dependencies: [FeatureStore.Default, SubagentGateway.Default, PlanPublisher.Default, FeatureConfig.Default],
 }) {}

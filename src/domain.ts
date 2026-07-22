@@ -182,12 +182,6 @@ export class SpawnFailed extends Data.TaggedError("SpawnFailed")<{ reason: strin
   }
 }
 
-export class PlannerFailed extends Data.TaggedError("PlannerFailed")<{ reason: string }> {
-  override get message(): string {
-    return this.reason;
-  }
-}
-
 export class PublishFailed extends Data.TaggedError("PublishFailed")<{ reason: string }> {
   override get message(): string {
     return `Plan saved locally but artifact publication failed: ${this.reason}`;

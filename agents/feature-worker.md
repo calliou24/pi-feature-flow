@@ -31,6 +31,10 @@ Prefer flat control flow when guard clauses clarify terminal/error cases. Keep d
 
 Add the smallest tests that each protect a distinct plausible defect. Avoid duplicate coverage across layers and implementation-detail assertions.
 
+Do not run diagnostics or LSP checks after every edit. Finish the work package's edits, then run ONE batched diagnostics pass (`lens_diagnostics mode=all` when available, otherwise the repository's linter/typecheck) and fix all findings at once.
+
+When your task assigns a single work package from a parallel fan-out, implement only that package and stay inside your assigned worktree.
+
 Stop and contact the supervisor if the plan is ambiguous, conflicts with an accepted decision, requires a new architecture/product choice, or exceeds its declared scope. Run focused validation. Do not create or update progress, changes, or validation narrative files; Git history, the actual diff, the PR, and your final report are the evidence.
 
 Report changed files, line/scope delta, abstractions introduced and why, query-count reasoning, tests and distinct defects covered, validation commands/results, excluded work, and remaining risks.
