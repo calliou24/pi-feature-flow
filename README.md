@@ -14,8 +14,8 @@ behind every change.
 /feature new  ──►  main-agent planning (interview + repository evidence)
                     │  feature_workflow plan(plan: complete Markdown)
                     ▼
-              plan.md published through Tailscale Serve
-                    ├──► background Fable-5-high adversarial review
+              rendered HTML plan published through Tailscale Serve
+                    ├──► background cross-model adversarial review
                     ▼
               HUMAN CHECKPOINT — approve the plan          ◄── the only gate
                     │  automatic
@@ -38,14 +38,20 @@ behind every change.
 - The plan the human approves is hash-pinned: if `plan.md` changes after
   publication, approval and implementation refuse until it is republished.
 - The main agent authors the plan. Adversarial review, implementation, and
-  validation run as **pi-subagents**. The implementation default is Sol low;
-  Fable low is available only when the user explicitly requests it. Approved
+  validation run as **pi-subagents**. Review defaults to Fable 5 high, but when
+  Fable 5 authored the plan in the main session it automatically routes to Sol
+  high instead, preserving an independent model perspective. The implementation
+  default is Sol low; Fable low is available only when the user explicitly
+  requests it. Approved
   `[parallel-safe]` packages can fan out to isolated Git worktrees with one
   writer per worktree and one workflow execution lease/run record. Workers and
   validators batch diagnostics once after edits/review rather than looping LSP
   checks after every edit.
-- The exact approved plan is copied beneath `~/.pi/agent/feature-flow/published/`
-  and served to tailnet members at the configured Tailscale Serve path.
+- The exact approved Markdown is copied beneath
+  `~/.pi/agent/feature-flow/published/` alongside a safe standalone HTML
+  rendering. The durable review URL points to
+  the HTML page and the plan tool ends the turn so the developer can inspect it
+  before the approval checkpoint.
 - Finished or abandoned features can be archived to a **private repository owned
   by the currently authenticated GitHub account**. Only context is retained:
   memory, plans, sessions/transcripts, scripts, documents, and run artifacts —
@@ -181,12 +187,14 @@ All keys optional; defaults shown:
 
 `routes` configures feature-flow's invoked roles. Interactive questioning,
 repository inspection, and plan authoring stay on whatever model is already
-selected in the main Pi session. `feature_workflow plan` publishes the exact
-hash-pinned Markdown at
-`https://<machine>.<tailnet>.ts.net/<servePath>/...`, then offers to start the
-configured adversarial review. Existing Tailscale Serve handlers are preserved
-when this path is added. Unrecognized legacy routing and publisher-selection
-keys are ignored.
+selected in the main Pi session. `feature_workflow plan` preserves the exact
+hash-pinned Markdown and publishes a standalone HTML rendering at
+`https://<machine>.<tailnet>.ts.net/<servePath>/...`. The URL is displayed in a
+durable plan card and the tool stops at the human checkpoint. The configured
+adversary route runs in the background unless the active planner is Fable 5, in
+which case review automatically uses `openai-codex/gpt-5.6-sol` at high
+thinking. Existing Tailscale Serve handlers are preserved when this path is
+added. Unrecognized legacy routing and publisher-selection keys are ignored.
 
 ## Development
 

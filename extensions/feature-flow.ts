@@ -23,7 +23,13 @@ import {
 	validateNamingCommand,
 } from "../src/identity.ts";
 import { composeContinuationContext } from "../src/plan.ts";
-import { FeatureConfig, type WorkerKind, workerRoute } from "../src/config.ts";
+import {
+	FeatureConfig,
+	adversaryRoute,
+	isFableFiveModel,
+	type WorkerKind,
+	workerRoute,
+} from "../src/config.ts";
 import { FeatureStore, featureDir } from "../src/store.ts";
 import { Workflow } from "../src/workflow.ts";
 import { PlanPublisher } from "../src/planner.ts";
@@ -43,6 +49,7 @@ import {
 } from "../src/prompts.ts";
 
 const POINTER_TYPE = "feature-flow-pointer";
+const PLAN_READY_TYPE = "feature-plan-ready";
 const STATUS_KEY = "feature-flow";
 
 function textContent(content: unknown): string {
@@ -92,6 +99,18 @@ async function pathExists(path: string | null | undefined): Promise<boolean> {
 }
 
 export default function featureFlow(pi: ExtensionAPI): void {
+	pi.registerEntryRenderer(PLAN_READY_TYPE, (entry, _options, theme) => {
+		const data = entry.data as { title?: string; url?: string };
+		return new Text(
+			theme.fg(
+				"accent",
+				`Plan ready for review${data.title ? ` · ${data.title}` : ""}\n${data.url ?? "URL unavailable"}\nReview the HTML plan, then approve or reject it.`,
+			),
+			0,
+			0,
+		);
+	});
+
 	const appLayer = Layer.mergeAll(
 		Workflow.Default,
 		FeatureStore.Default,
@@ -707,7 +726,7 @@ export default function featureFlow(pi: ExtensionAPI): void {
 		fableApproved = false,
 	): Promise<void> {
 		const config = await getConfig();
-		let route = config.routes.adversary;
+		let route = adversaryRoute(config, ctx?.model);
 		if (stage === "implementation") route = workerRoute(config, workerKind);
 		else if (stage === "validation") route = config.routes.validator;
 		if (/fable/i.test(route.model) && !fableApproved) {
@@ -721,15 +740,13 @@ export default function featureFlow(pi: ExtensionAPI): void {
 		}
 		const result = await run(
 			Effect.flatMap(Workflow, (workflow) =>
-				workflow.spawnStage(
-					featureId,
-					stage,
-					task,
-					ctx?.cwd ?? null,
-					ctx?.sessionManager.getSessionId() ?? null,
+				workflow.spawnStage(featureId, stage, task, {
+					cwd: ctx?.cwd ?? null,
+					parentSessionId: ctx?.sessionManager.getSessionId() ?? null,
 					workerKind,
 					packages,
-				),
+					adversaryRouteOverride: stage === "adversary" ? route : undefined,
+				}),
 			),
 		);
 		if (ctx) {
@@ -744,20 +761,18 @@ export default function featureFlow(pi: ExtensionAPI): void {
 	async function startAdversary(
 		featureId: string,
 		ctx: ExtensionContext,
-	): Promise<boolean> {
+	): Promise<{ started: boolean; model: string; usedFallback: boolean }> {
 		const config = await getConfig();
+		const route = adversaryRoute(config, ctx.model);
+		const usedFallback = isFableFiveModel(ctx.model);
 		if (
-			!(await confirmFableSubagent(
-				ctx,
-				"adversarial plan review",
-				config.routes.adversary.model,
-			))
+			!(await confirmFableSubagent(ctx, "adversarial plan review", route.model))
 		) {
 			ctx.ui.notify(
 				"Adversarial review skipped because Fable approval was declined.",
 				"info",
 			);
-			return false;
+			return { started: false, model: route.model, usedFallback };
 		}
 		const state = await loadFeature(featureId);
 		const revision = state.planArtifact?.planRevision;
@@ -772,14 +787,20 @@ export default function featureFlow(pi: ExtensionAPI): void {
 			undefined,
 			true,
 		);
-		return true;
+		return { started: true, model: route.model, usedFallback };
 	}
 
 	async function runPlanStage(
 		featureId: string,
 		planMarkdown: string | null,
 		ctx: ExtensionContext,
-	): Promise<{ url: string; adversaryStarted: boolean; revision: number }> {
+	): Promise<{
+		url: string;
+		adversaryStarted: boolean;
+		adversaryModel: string;
+		usedAdversaryFallback: boolean;
+		revision: number;
+	}> {
 		ctx.ui.notify("Publishing the main-agent plan to Tailscale…", "info");
 		const url = await run(
 			Effect.flatMap(Workflow, (workflow) =>
@@ -793,13 +814,21 @@ export default function featureFlow(pi: ExtensionAPI): void {
 			`- Artifact: ${url}`,
 			"extension",
 		);
-		ctx.ui.notify(`Review the plan: ${url}`, "info");
+		ctx.ui.notify(`Review the HTML plan: ${url}`, "info");
 		const published = await loadFeature(featureId);
+		pi.appendEntry(PLAN_READY_TYPE, {
+			featureId,
+			title: published.title,
+			url,
+			revision: published.planArtifact?.planRevision ?? 0,
+		});
 		updateUi(ctx, published);
-		const adversaryStarted = await startAdversary(featureId, ctx);
+		const adversary = await startAdversary(featureId, ctx);
 		return {
 			url,
-			adversaryStarted,
+			adversaryStarted: adversary.started,
+			adversaryModel: adversary.model,
+			usedAdversaryFallback: adversary.usedFallback,
 			revision: published.planArtifact?.planRevision ?? 0,
 		};
 	}
@@ -808,9 +837,9 @@ export default function featureFlow(pi: ExtensionAPI): void {
 		featureId: string,
 		ctx: ExtensionContext,
 	): Promise<string> {
-		const started = await startAdversary(featureId, ctx);
-		return started
-			? "Adversarial review started in a fresh context."
+		const review = await startAdversary(featureId, ctx);
+		return review.started
+			? `Adversarial review started with ${review.model}${review.usedFallback ? " (Sol-high fallback because Fable 5 authored the plan)" : ""}.`
 			: "Adversarial review skipped.";
 	}
 
@@ -1069,17 +1098,13 @@ export default function featureFlow(pi: ExtensionAPI): void {
 			if (isPartial)
 				return new Text(theme.fg("warning", "feature_workflow running…"), 0, 0);
 			const full = textContent(result.content);
-			const details = result.details as { summary?: string } | undefined;
-			return new Text(
-				expanded
-					? full
-					: theme.fg(
-							"success",
-							`✓ ${details?.summary ?? compactText(full, 120)}`,
-						),
-				0,
-				0,
-			);
+			const details = result.details as
+				| { summary?: string; url?: string }
+				| undefined;
+			const collapsed = details?.url
+				? `✓ HTML plan ready for review\n${details.url}\nReview it, then approve or reject.`
+				: `✓ ${details?.summary ?? compactText(full, 120)}`;
+			return new Text(expanded ? full : theme.fg("success", collapsed), 0, 0);
 		},
 		async execute(_id, params, _signal, _update, ctx) {
 			if (params.action === "start") {
@@ -1135,21 +1160,24 @@ export default function featureFlow(pi: ExtensionAPI): void {
 					ctx,
 				);
 				const reviewNote = published.adversaryStarted
-					? "The adversarial review is running in the background; surface its findings when they arrive."
+					? `The adversarial review is running with ${published.adversaryModel}${published.usedAdversaryFallback ? " (Sol high selected automatically because Fable 5 authored the plan)" : ""}; surface its findings when they arrive.`
 					: "The adversarial review was skipped because Fable approval was declined.";
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Plan published for human review: ${published.url}\nShow this URL to the user. ${reviewNote} The plan checkpoint remains pending.`,
+							text: `HTML plan published for human review: ${published.url}\n${reviewNote} Stop now and wait for the developer to review the plan. The plan checkpoint remains pending.`,
 						},
 					],
 					details: {
 						featureId,
 						url: published.url,
 						revision: published.revision,
-						summary: `plan published rev ${published.revision}`,
+						adversaryModel: published.adversaryModel,
+						usedAdversaryFallback: published.usedAdversaryFallback,
+						summary: `HTML plan published rev ${published.revision}`,
 					},
+					terminate: true,
 				};
 			}
 			if (params.action === "request_approval" || params.action === "reject") {
